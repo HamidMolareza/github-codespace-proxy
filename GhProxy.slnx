@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GhProxy.Api/GhProxy.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GhProxy.Tests/GhProxy.Tests.csproj" />
+  </Folder>
+</Solution>
