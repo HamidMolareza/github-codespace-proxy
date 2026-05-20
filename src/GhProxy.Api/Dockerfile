@@ -23,7 +23,7 @@ ENV ASPNETCORE_URLS=http://+:8080 \
 COPY --from=build /app/publish .
 
 VOLUME ["/app/data"]
-EXPOSE 8080
+EXPOSE 8080 8901
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD bash -c "</dev/tcp/127.0.0.1/8080" || exit 1

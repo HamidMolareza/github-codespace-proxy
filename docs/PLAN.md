@@ -1,28 +1,26 @@
-# GitHub Codespaces Manager Plan
+# Local Proxy Manager Plan
 
 ## Summary
 
-Pivot the app from a VPS proxy panel into a GitHub account and Codespaces admin panel. The active UI stores GitHub username/PAT records, validates tokens, syncs Codespaces, shows usage where GitHub exposes it, and provides normal Codespaces lifecycle actions.
-
-This plan intentionally excludes proxy/tunnel automation, Codespaces-as-proxy behavior, quota-bypass rotation, and automatic switching between accounts.
+Pivot the active app workflow to a local-only proxy manager. The main UI creates local proxy profiles, starts an HTTP proxy listener on the backend host, supports HTTPS `CONNECT`, shows a ready endpoint, and records observable start/stop/probe/request events.
 
 ## Milestones
 
-1. Add GitHub account and Codespace snapshot persistence.
-2. Add encrypted PAT storage and redacted GitHub API observability.
-3. Add official GitHub REST API client for user validation, Codespaces sync, lifecycle actions, export, and billing usage.
-4. Add safe maintenance automation: scheduled sync and idle auto-stop only.
-5. Replace the active frontend with a Codespaces dashboard.
-6. Update Docker/local docs and validation commands.
-7. Add tests for schema creation, sync behavior, limited-account blocking, and secret redaction.
+1. Add local proxy profile and session persistence.
+2. Add local proxy API endpoints for CRUD, start, stop, active session, and probe.
+3. Implement an in-process HTTP proxy with HTTPS `CONNECT`.
+4. Add idle shutdown for inactive local proxy sessions.
+5. Replace the active frontend with a local proxy dashboard.
+6. Publish the proxy port through Docker Compose on host localhost.
+7. Add backend tests and update run/operations docs.
 
 ## Acceptance Criteria
 
-- A user can add, edit, view, and delete GitHub account records.
-- PAT values are encrypted at rest, redacted from logs, and never returned by API responses.
-- A user can validate an account token.
-- A user can sync and inspect Codespaces grouped by selected account.
-- A user can create, start, stop, export, and delete a Codespace through the UI.
-- Usage is displayed when GitHub billing APIs allow it; otherwise the UI clearly shows that usage is unavailable.
-- The app can auto-stop idle Codespaces after the configured idle window.
-- Operational events are persisted in SQLite and optional JSONL files with bounded redacted output.
+- A user can add, edit, view, and delete local proxy profiles.
+- A user can click Start and receive a ready endpoint such as `http://127.0.0.1:8901`.
+- Plain HTTP proxy requests are forwarded.
+- HTTPS destinations work through `CONNECT`.
+- Optional proxy authentication rejects unauthenticated requests.
+- Stop closes the active listener.
+- Idle shutdown stops inactive sessions.
+- Activity shows start, stop, probe, auth, request, and idle events with redaction.

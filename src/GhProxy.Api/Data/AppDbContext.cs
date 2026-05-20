@@ -11,6 +11,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<OperationalEvent> OperationalEvents => Set<OperationalEvent>();
     public DbSet<GitHubAccount> GitHubAccounts => Set<GitHubAccount>();
     public DbSet<CodespaceSnapshot> CodespaceSnapshots => Set<CodespaceSnapshot>();
+    public DbSet<LocalProxyProfile> LocalProxyProfiles => Set<LocalProxyProfile>();
+    public DbSet<LocalProxySession> LocalProxySessions => Set<LocalProxySession>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -93,6 +95,32 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(x => x.Codespaces)
                 .HasForeignKey(x => x.AccountId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<LocalProxyProfile>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.BindHost).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.ProxyUsername).HasMaxLength(120);
+            entity.Property(x => x.ProtectedProxyPassword).HasMaxLength(2000);
+            entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+            entity.HasIndex(x => x.Name).IsUnique();
+        });
+
+        modelBuilder.Entity<LocalProxySession>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+            entity.Property(x => x.BindHost).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.LastError).HasMaxLength(2000);
+            entity.HasOne(x => x.Profile)
+                .WithMany(x => x.Sessions)
+                .HasForeignKey(x => x.ProfileId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(x => x.ProfileId);
+            entity.HasIndex(x => x.StartedAt);
         });
     }
 }

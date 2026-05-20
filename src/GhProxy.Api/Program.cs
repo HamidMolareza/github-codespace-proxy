@@ -18,6 +18,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.Configure<ProxyRuntimeOptions>(builder.Configuration.GetSection("ProxyRuntime"));
 builder.Services.Configure<ObservabilityOptions>(builder.Configuration.GetSection("Observability"));
 builder.Services.Configure<GitHubOptions>(builder.Configuration.GetSection("GitHub"));
+builder.Services.Configure<LocalProxyOptions>(builder.Configuration.GetSection("LocalProxy"));
 builder.Services.AddDataProtection()
     .SetApplicationName("GhProxy")
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataPath, "keys")));
@@ -41,7 +42,9 @@ builder.Services.AddScoped<NodeConfigRenderer>();
 builder.Services.AddScoped<VpsRuntimeService>();
 builder.Services.AddScoped<TunnelService>();
 builder.Services.AddScoped<GitHubCodespaceService>();
+builder.Services.AddSingleton<LocalProxyRuntimeService>();
 builder.Services.AddHostedService<IdleShutdownService>();
+builder.Services.AddHostedService<LocalProxyIdleShutdownService>();
 builder.Services.AddHostedService<GitHubCodespaceMaintenanceService>();
 builder.Services.AddHostedService<ObservabilityRetentionService>();
 builder.Services.AddCors(options =>
@@ -74,6 +77,7 @@ app.MapGet("/api/health", (ICorrelationContext correlation) =>
     Results.Ok(new { status = "ok", at = DateTimeOffset.UtcNow, correlationId = correlation.CorrelationId }));
 app.MapNodeEndpoints();
 app.MapSessionEndpoints();
+app.MapLocalProxyEndpoints();
 app.MapGitHubEndpoints();
 app.MapObservabilityEndpoints();
 

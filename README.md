@@ -1,21 +1,20 @@
-# GitHub Codespaces Manager
+# Local Proxy Manager
 
-Local admin panel for managing multiple GitHub accounts and their Codespaces.
+Local admin panel for running a proxy listener on the same machine as the app.
 
-The application runs on a trusted workstation or VPS, stores GitHub username/PAT pairs with ASP.NET Core Data Protection, validates tokens, lists Codespaces, shows best-effort usage data, and controls normal Codespaces lifecycle actions through the official GitHub REST API.
+The application stores local proxy profiles in SQLite, starts an HTTP proxy on a configurable localhost port, supports HTTPS through `CONNECT`, records operational activity, and stops idle sessions automatically.
 
 ## Scope
 
-- Create, read, update, and delete GitHub account records.
-- Store PATs encrypted at rest and never return PAT values from the API.
-- Validate tokens with `GET /user`.
-- Sync Codespaces with `GET /user/codespaces`.
-- Create, start, stop, export, and delete Codespaces with official GitHub API endpoints.
-- Show usage from GitHub billing usage APIs when the token/account can access them.
-- Auto-stop idle running Codespaces after the configured idle window.
-- Inspect operational activity, GitHub API failures, diagnostics, and correlation IDs.
+- Create, read, update, and delete local proxy profiles.
+- Start, stop, restart by stopping and starting, and probe the active proxy.
+- Expose a local HTTP proxy endpoint, default `http://127.0.0.1:8901`.
+- Support optional proxy Basic authentication.
+- Forward plain HTTP requests and HTTPS `CONNECT` tunnels.
+- Track active connections, request counts, last activity, idle timeout, and errors.
+- Inspect operational activity, diagnostics, and correlation IDs.
 
-This project does not implement Codespaces-as-proxy, port forwarding, proxy process management, quota-bypass rotation, or automatic switch-to-next-account behavior.
+The proxy exits through the same machine/network where the backend runs. It does not provide a different external IP unless that machine already uses another network path such as a VPN.
 
 ## Run Locally
 
@@ -33,7 +32,13 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`.
+Open `http://127.0.0.1:5173`, create a profile, and click Start.
+
+Test the active proxy:
+
+```bash
+curl -x http://127.0.0.1:8901 http://example.com/
+```
 
 ## Run With Docker Compose
 
@@ -43,9 +48,15 @@ Build and start both services:
 docker compose up --build -d
 ```
 
-Open `http://127.0.0.1:5173`. The frontend container serves the built React app and proxies `/api/*` to the backend container.
+Open `http://127.0.0.1:5173`.
 
-The backend API is also published directly at `http://127.0.0.1:5080`.
+Published ports:
+
+- Frontend: `127.0.0.1:5173`
+- Backend API: `127.0.0.1:5080`
+- Local proxy: `127.0.0.1:8901`
+
+In Docker mode, the backend binds the proxy listener to `0.0.0.0` inside the container, while Compose publishes it only to host localhost.
 
 Check the stack:
 
@@ -66,7 +77,7 @@ Data is stored in the named Docker volume `gh-proxy_gh-proxy-data`.
 ## Validate
 
 ```bash
-dotnet build GhProxy.sln --no-restore
+dotnet build tests/GhProxy.Tests/GhProxy.Tests.csproj --no-restore
 dotnet test tests/GhProxy.Tests/GhProxy.Tests.csproj --no-restore
 cd frontend && npm run lint && npm run build
 docker compose config
@@ -74,10 +85,10 @@ docker compose config
 
 ## Observability
 
-The API writes structured operational events to SQLite and, by default, JSONL files under `data/logs/`. The frontend Activity tab reads:
+The API writes structured operational events to SQLite and, by default, JSONL files under `data/logs/`. The frontend Activity panel reads:
 
 - `GET /api/activity`
 - `GET /api/activity/summary`
 - `GET /api/diagnostics/runtime`
 
-Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. GitHub API paths, status codes, failures, and bounded response snippets are recorded with secret redaction.
+Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. Proxy start/stop/probe results, request failures, auth failures, idle stops, and bounded command output are recorded with secret redaction.

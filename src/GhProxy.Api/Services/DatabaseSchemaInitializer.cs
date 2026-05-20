@@ -84,5 +84,67 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
         await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_CodespaceSnapshots_AccountId_Name" ON "CodespaceSnapshots" ("AccountId", "Name");""",
             cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS "LocalProxyProfiles" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_LocalProxyProfiles" PRIMARY KEY,
+                "Name" TEXT NOT NULL,
+                "BindHost" TEXT NOT NULL,
+                "LocalPort" INTEGER NOT NULL,
+                "ProxyUsername" TEXT NULL,
+                "ProtectedProxyPassword" TEXT NULL,
+                "IdleShutdownMinutes" INTEGER NOT NULL,
+                "Notes" TEXT NULL,
+                "Status" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL
+            );
+            """,
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_LocalProxyProfiles_Name" ON "LocalProxyProfiles" ("Name");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS "LocalProxySessions" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_LocalProxySessions" PRIMARY KEY,
+                "ProfileId" TEXT NOT NULL,
+                "Status" TEXT NOT NULL,
+                "BindHost" TEXT NOT NULL,
+                "LocalPort" INTEGER NOT NULL,
+                "StartedAt" TEXT NOT NULL,
+                "LastActivityAt" TEXT NOT NULL,
+                "StoppedAt" TEXT NULL,
+                "LastError" TEXT NULL,
+                "TotalRequests" INTEGER NOT NULL,
+                "TotalConnectTunnels" INTEGER NOT NULL,
+                "TotalBytesReceived" INTEGER NOT NULL,
+                "TotalBytesSent" INTEGER NOT NULL,
+                CONSTRAINT "FK_LocalProxySessions_LocalProxyProfiles_ProfileId" FOREIGN KEY ("ProfileId") REFERENCES "LocalProxyProfiles" ("Id") ON DELETE CASCADE
+            );
+            """,
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_LocalProxySessions_ProfileId" ON "LocalProxySessions" ("ProfileId");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_LocalProxySessions_StartedAt" ON "LocalProxySessions" ("StartedAt");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "LocalProxyProfiles"
+            SET "Status" = 'Stopped'
+            WHERE "Status" IN ('Starting', 'Running');
+            """,
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "LocalProxySessions"
+            SET "Status" = 'Error',
+                "StoppedAt" = COALESCE("StoppedAt", CURRENT_TIMESTAMP),
+                "LastError" = COALESCE("LastError", 'The application restarted while this in-memory local proxy session was active.')
+            WHERE "Status" IN ('Starting', 'Running', 'Stopping');
+            """,
+            cancellationToken);
     }
 }

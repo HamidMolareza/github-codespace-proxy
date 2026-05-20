@@ -6,7 +6,16 @@
 - Frontend: React, TypeScript, and Vite.
 - Database: SQLite through EF Core.
 - GitHub integration: direct `HttpClient` calls to official GitHub REST API endpoints.
-- Control plane location: trusted local workstation or VPS.
+- Active control plane location: trusted local workstation or local Docker Compose stack.
+- Active proxy mode: in-process local HTTP proxy with HTTPS `CONNECT`.
+
+## Local Proxy Boundaries
+
+- The default proxy endpoint is `http://127.0.0.1:8901`.
+- The proxy exits through the same machine/network as the backend.
+- Docker Compose binds the backend proxy listener inside the container and exposes it only on host localhost.
+- Optional proxy authentication uses Basic auth and protected password storage.
+- The app does not run a VPS tunnel or use GitHub Codespaces as a proxy backend.
 
 ## GitHub API Boundaries
 

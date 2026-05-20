@@ -23,6 +23,59 @@ export interface GitHubAccountForm {
   plan: string;
 }
 
+export type LocalProxyProfileStatus = 'Stopped' | 'Starting' | 'Running' | 'Error';
+export type LocalProxySessionStatus = 'Starting' | 'Running' | 'Stopping' | 'Stopped' | 'Error';
+
+export interface LocalProxyProfile {
+  id: string;
+  name: string;
+  bindHost: string;
+  localPort: number;
+  proxyUsername?: string | null;
+  requiresAuthentication: boolean;
+  idleShutdownMinutes: number;
+  notes?: string | null;
+  status: LocalProxyProfileStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocalProxyProfileForm {
+  name: string;
+  bindHost: string;
+  localPort: number;
+  proxyUsername: string;
+  proxyPassword: string;
+  idleShutdownMinutes: number;
+  notes: string;
+}
+
+export interface LocalProxySession {
+  id: string;
+  profileId: string;
+  profileName: string;
+  status: LocalProxySessionStatus;
+  bindHost: string;
+  localPort: number;
+  proxyUrl: string;
+  startedAt: string;
+  lastActivityAt: string;
+  idleShutdownAt: string;
+  stoppedAt?: string | null;
+  lastError?: string | null;
+  totalRequests: number;
+  totalConnectTunnels: number;
+  totalBytesReceived: number;
+  totalBytesSent: number;
+  activeConnections: number;
+}
+
+export interface LocalProxyResult {
+  succeeded: boolean;
+  message: string;
+  session?: LocalProxySession | null;
+}
+
 export interface CodespaceSnapshot {
   id: string;
   accountId: string;

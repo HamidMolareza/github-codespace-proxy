@@ -7,6 +7,10 @@ import type {
   GitHubAccountForm,
   GitHubLifecycleResult,
   GitHubUsage,
+  LocalProxyProfile,
+  LocalProxyProfileForm,
+  LocalProxyResult,
+  LocalProxySession,
   OperationalEvent,
   RuntimeDiagnostics
 } from './types';
@@ -33,6 +37,34 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  localProxyProfiles: () => request<LocalProxyProfile[]>('/api/local-proxy/profiles'),
+  createLocalProxyProfile: (form: LocalProxyProfileForm) =>
+    request<LocalProxyProfile>('/api/local-proxy/profiles', {
+      method: 'POST',
+      body: JSON.stringify(emptyToNull(form))
+    }),
+  updateLocalProxyProfile: (id: string, form: LocalProxyProfileForm) =>
+    request<LocalProxyProfile>(`/api/local-proxy/profiles/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(emptyToNull(form))
+    }),
+  deleteLocalProxyProfile: (id: string) =>
+    request<void>(`/api/local-proxy/profiles/${id}`, {
+      method: 'DELETE'
+    }),
+  localProxySession: () => request<LocalProxySession | null>('/api/local-proxy/session'),
+  startLocalProxy: (profileId: string) =>
+    request<LocalProxyResult>(`/api/local-proxy/profiles/${profileId}/start`, {
+      method: 'POST'
+    }),
+  stopLocalProxy: () =>
+    request<LocalProxyResult>('/api/local-proxy/stop', {
+      method: 'POST'
+    }),
+  probeLocalProxy: () =>
+    request<LocalProxyResult>('/api/local-proxy/probe', {
+      method: 'POST'
+    }),
   accounts: () => request<GitHubAccount[]>('/api/github/accounts'),
   createAccount: (form: GitHubAccountForm) =>
     request<GitHubAccount>('/api/github/accounts', {
