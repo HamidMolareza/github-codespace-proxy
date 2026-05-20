@@ -8,6 +8,7 @@ node_modules/
 dist/
 coverage/
 TestResults/
+*.tsbuildinfo
 *.user
 *.suo
 *.db
@@ -17,4 +18,3 @@ logs/
 .env
 .env.*
 !.env.example
-
