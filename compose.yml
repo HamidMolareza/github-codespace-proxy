@@ -12,11 +12,14 @@ services:
       ConnectionStrings__Default: Data Source=/app/data/gh-proxy.db
       Observability__LogDirectory: /app/data/logs
       LocalProxy__BindHostOverride: 0.0.0.0
+      LocalProxy__XrayExecutablePath: /usr/local/bin/xray
+      LocalProxy__XrayConfigDirectory: /app/data/xray
       GitHub__AutoStopIdleMinutes: 30
       GitHub__SyncIntervalSeconds: 300
     ports:
       - "127.0.0.1:5080:8080"
       - "127.0.0.1:8901:8901"
+      - "127.0.0.1:8902:8902"
     volumes:
       - gh-proxy-data:/app/data
     healthcheck:

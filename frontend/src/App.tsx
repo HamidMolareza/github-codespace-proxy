@@ -62,6 +62,7 @@ const emptyProfileForm: LocalProxyProfileForm = {
   name: '',
   bindHost: '127.0.0.1',
   localPort: 8901,
+  socksPort: 8902,
   proxyUsername: '',
   proxyPassword: '',
   idleShutdownMinutes: 30,
@@ -299,6 +300,7 @@ export default function App() {
       name: profile.name,
       bindHost: profile.bindHost,
       localPort: profile.localPort,
+      socksPort: profile.socksPort,
       proxyUsername: profile.proxyUsername ?? '',
       proxyPassword: '',
       idleShutdownMinutes: profile.idleShutdownMinutes,
@@ -746,10 +748,12 @@ function LocalProxyPanel({
 }: LocalProxyPanelProps) {
   const proxyExports = session
     ? [
-        `export HTTP_PROXY=${session.proxyUrl}`,
-        `export HTTPS_PROXY=${session.proxyUrl}`,
-        `export http_proxy=${session.proxyUrl}`,
-        `export https_proxy=${session.proxyUrl}`,
+        `export HTTP_PROXY=${session.httpProxyUrl}`,
+        `export HTTPS_PROXY=${session.httpProxyUrl}`,
+        `export http_proxy=${session.httpProxyUrl}`,
+        `export https_proxy=${session.httpProxyUrl}`,
+        `export ALL_PROXY=${session.socksProxyUrl}`,
+        `export all_proxy=${session.socksProxyUrl}`,
         'export NO_PROXY=localhost,127.0.0.1',
         'export no_proxy=localhost,127.0.0.1'
       ].join('\n')
@@ -791,8 +795,12 @@ function LocalProxyPanel({
                 <input value={form.bindHost} onChange={(event) => onUpdateField('bindHost', event.target.value)} required />
               </label>
               <label>
-                Local port
+                HTTP port
                 <input type="number" min="1" max="65535" value={form.localPort} onChange={(event) => onUpdateField('localPort', Number(event.target.value))} required />
+              </label>
+              <label>
+                SOCKS port
+                <input type="number" min="1" max="65535" value={form.socksPort} onChange={(event) => onUpdateField('socksPort', Number(event.target.value))} required />
               </label>
               <label>
                 Idle minutes
@@ -824,8 +832,14 @@ function LocalProxyPanel({
                 <h2>Use Local Proxy</h2>
               </div>
               <div className="proxy-copy-row">
-                <code>{session.proxyUrl}</code>
-                <button title="Copy proxy URL" type="button" onClick={() => copyText(session.proxyUrl)}>
+                <code>{session.httpProxyUrl}</code>
+                <button title="Copy HTTP proxy URL" type="button" onClick={() => copyText(session.httpProxyUrl)}>
+                  <Copy size={16} />
+                </button>
+              </div>
+              <div className="proxy-copy-row">
+                <code>{session.socksProxyUrl}</code>
+                <button title="Copy SOCKS proxy URL" type="button" onClick={() => copyText(session.socksProxyUrl)}>
                   <Copy size={16} />
                 </button>
               </div>
@@ -848,7 +862,7 @@ function LocalProxyPanel({
               <div className="node-main">
                 <div>
                   <h3>{profile.name}</h3>
-                  <p>{profile.bindHost}:{profile.localPort}</p>
+                  <p>HTTP {profile.bindHost}:{profile.localPort} / SOCKS {profile.bindHost}:{profile.socksPort}</p>
                 </div>
                 <span className={`badge ${badgeClass(profile.status)}`}>{profile.status}</span>
               </div>

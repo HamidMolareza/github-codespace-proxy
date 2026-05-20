@@ -1,5 +1,4 @@
-using System.Buffers;
-using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
@@ -17,6 +16,9 @@ public sealed class LocalProxyRuntimeService(
     IClock clock,
     IOperationalEventSink events,
     IOptions<LocalProxyOptions> options,
+    XrayConfigRenderer configRenderer,
+    IXrayProcessRunner processRunner,
+    IHostEnvironment environment,
     ILogger<LocalProxyRuntimeService> logger)
 {
     private readonly LocalProxyOptions _options = options.Value;
@@ -33,10 +35,10 @@ public sealed class LocalProxyRuntimeService(
                 await events.WriteAsync(new OperationalEventWrite(
                     "local_proxy.start.reused",
                     OperationalEventSeverity.Warning,
-                    "A local proxy session is already running.",
-                    Details: new { running.SessionId, running.LocalPort }),
+                    "A local Xray proxy session is already running.",
+                    Details: new { running.SessionId, running.HttpPort, running.SocksPort }),
                     cancellationToken);
-                return LocalProxyStartResult.Ok("A local proxy session is already running.", await GetActiveAsync(cancellationToken));
+                return LocalProxyStartResult.Ok("A local Xray proxy session is already running.", await GetActiveAsync(cancellationToken));
             }
 
             using var scope = scopeFactory.CreateScope();
@@ -47,14 +49,15 @@ public sealed class LocalProxyRuntimeService(
             var listenerBindHost = string.IsNullOrWhiteSpace(_options.BindHostOverride)
                 ? profile.BindHost
                 : _options.BindHostOverride;
-            var bindAddress = ResolveBindAddress(listenerBindHost);
-            var listener = new TcpListener(bindAddress, profile.LocalPort);
+            var portError = TryGetUnavailablePortMessage(listenerBindHost, profile.LocalPort, profile.SocksPort);
+
             var session = new LocalProxySession
             {
                 ProfileId = profile.Id,
                 Status = LocalProxySessionStatus.Starting,
                 BindHost = profile.BindHost,
                 LocalPort = profile.LocalPort,
+                SocksPort = profile.SocksPort,
                 StartedAt = clock.UtcNow,
                 LastActivityAt = clock.UtcNow
             };
@@ -67,47 +70,109 @@ public sealed class LocalProxyRuntimeService(
             await events.WriteAsync(new OperationalEventWrite(
                 "local_proxy.start.requested",
                 OperationalEventSeverity.Information,
-                $"Starting local proxy on {profile.BindHost}:{profile.LocalPort}.",
-                Details: new { profile.Id, profile.BindHost, ListenerBindHost = listenerBindHost, profile.LocalPort }),
+                $"Starting local Xray proxy on HTTP {profile.BindHost}:{profile.LocalPort} and SOCKS {profile.BindHost}:{profile.SocksPort}.",
+                Details: new { profile.Id, profile.BindHost, ListenerBindHost = listenerBindHost, profile.LocalPort, profile.SocksPort }),
                 cancellationToken);
 
-            try
-            {
-                listener.Start();
-            }
-            catch (SocketException ex)
+            if (portError is not null)
             {
                 session.Status = LocalProxySessionStatus.Error;
-                session.LastError = ex.Message;
+                session.LastError = portError;
                 profile.Status = LocalProxyProfileStatus.Error;
                 await db.SaveChangesAsync(cancellationToken);
-                listener.Dispose();
                 await events.WriteAsync(new OperationalEventWrite(
                     "local_proxy.port.unavailable",
                     OperationalEventSeverity.Error,
-                    $"Local proxy port {profile.LocalPort} is unavailable.",
-                    StandardError: ex.Message,
-                    Details: new { profile.Id, profile.LocalPort }),
+                    portError,
+                    Details: new { profile.Id, profile.LocalPort, profile.SocksPort }),
                     cancellationToken);
-                return LocalProxyStartResult.Fail($"Port {profile.LocalPort} is unavailable: {ex.Message}", ToRuntimeState(session, profile, 0));
+                return LocalProxyStartResult.Fail(portError, ToRuntimeState(session, profile, 0));
             }
 
             var password = string.IsNullOrWhiteSpace(profile.ProtectedProxyPassword)
                 ? null
                 : secrets.Unprotect(profile.ProtectedProxyPassword);
+            var runtimeDirectory = GetRuntimeDirectory(session.Id);
+            Directory.CreateDirectory(runtimeDirectory);
+            var configPath = Path.Combine(runtimeDirectory, "config.json");
+            var accessLogPath = Path.Combine(runtimeDirectory, "access.log");
+            var errorLogPath = Path.Combine(runtimeDirectory, "error.log");
+            var config = configRenderer.Render(new XrayConfigRequest(
+                listenerBindHost,
+                profile.LocalPort,
+                profile.SocksPort,
+                accessLogPath,
+                errorLogPath,
+                profile.ProxyUsername,
+                password));
+            await File.WriteAllTextAsync(configPath, config, cancellationToken);
+            await events.WriteAsync(new OperationalEventWrite(
+                "local_proxy.xray.config.rendered",
+                OperationalEventSeverity.Information,
+                "Rendered Xray local proxy configuration.",
+                Details: new { ProfileId = profile.Id, SessionId = session.Id, ConfigPath = configPath, AccessLogPath = accessLogPath, ErrorLogPath = errorLogPath }),
+                cancellationToken);
+
+            XrayProcessHandle handle;
+            try
+            {
+                handle = processRunner.Start(_options.XrayExecutablePath, configPath, runtimeDirectory);
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+            {
+                session.Status = LocalProxySessionStatus.Error;
+                session.LastError = ex.Message;
+                profile.Status = LocalProxyProfileStatus.Error;
+                await db.SaveChangesAsync(cancellationToken);
+                await events.WriteAsync(new OperationalEventWrite(
+                    "local_proxy.xray.start.failed",
+                    OperationalEventSeverity.Error,
+                    "Failed to start Xray.",
+                    StandardError: ex.Message,
+                    Details: new { ProfileId = profile.Id, SessionId = session.Id, _options.XrayExecutablePath }),
+                    cancellationToken);
+                return LocalProxyStartResult.Fail($"Failed to start Xray: {ex.Message}", ToRuntimeState(session, profile, 0));
+            }
+
             var state = new RunningLocalProxy(
                 profile.Id,
                 profile.Name,
                 session.Id,
                 profile.BindHost,
                 profile.LocalPort,
+                profile.SocksPort,
                 profile.ProxyUsername,
                 password,
                 Math.Max(1, profile.IdleShutdownMinutes),
-                listener);
+                handle,
+                configPath,
+                accessLogPath,
+                errorLogPath);
             state.LastActivityAt = session.LastActivityAt;
             _running = state;
-            _ = Task.Run(() => AcceptLoopAsync(state), CancellationToken.None);
+            _ = Task.Run(() => MonitorProcessAsync(state), CancellationToken.None);
+
+            if (!await WaitForPortsAsync(state, TimeSpan.FromSeconds(8), cancellationToken))
+            {
+                var message = string.IsNullOrWhiteSpace(handle.StandardError)
+                    ? "Xray did not open the configured HTTP and SOCKS ports in time."
+                    : $"Xray did not open the configured ports: {handle.StandardError}";
+                state.MarkStopped();
+                await handle.StopAsync();
+                session.Status = LocalProxySessionStatus.Error;
+                session.LastError = message;
+                profile.Status = LocalProxyProfileStatus.Error;
+                await db.SaveChangesAsync(cancellationToken);
+                _running = null;
+                await events.WriteAsync(new OperationalEventWrite(
+                    "local_proxy.xray.ready.timeout",
+                    OperationalEventSeverity.Error,
+                    "Xray failed to become ready.",
+                    StandardError: handle.StandardError,
+                    Details: new { ProfileId = profile.Id, SessionId = session.Id, profile.LocalPort, profile.SocksPort }),
+                    cancellationToken);
+                return LocalProxyStartResult.Fail(message, ToRuntimeState(session, profile, 0));
+            }
 
             session.Status = LocalProxySessionStatus.Running;
             profile.Status = LocalProxyProfileStatus.Running;
@@ -115,16 +180,16 @@ public sealed class LocalProxyRuntimeService(
             await db.SaveChangesAsync(cancellationToken);
 
             await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.listener.started",
+                "local_proxy.xray.started",
                 OperationalEventSeverity.Information,
-                $"Local proxy is listening on {profile.BindHost}:{profile.LocalPort}.",
-                Details: new { ProfileId = profile.Id, SessionId = session.Id, profile.LocalPort }),
+                $"Local Xray proxy is listening on HTTP {profile.BindHost}:{profile.LocalPort} and SOCKS {profile.BindHost}:{profile.SocksPort}.",
+                Details: new { ProfileId = profile.Id, SessionId = session.Id, handle.ProcessId, profile.LocalPort, profile.SocksPort }),
                 cancellationToken);
 
             var probe = await ProbeActiveAsync(cancellationToken);
             return probe.Succeeded
-                ? LocalProxyStartResult.Ok("Local proxy is ready.", probe.Session)
-                : LocalProxyStartResult.Ok($"Local proxy is listening, but probe failed: {probe.Message}", probe.Session);
+                ? LocalProxyStartResult.Ok("Local Xray proxy is ready.", probe.Session)
+                : LocalProxyStartResult.Ok($"Local Xray proxy is listening, but probe failed: {probe.Message}", probe.Session);
         }
         finally
         {
@@ -143,21 +208,24 @@ public sealed class LocalProxyRuntimeService(
                 await events.WriteAsync(new OperationalEventWrite(
                     "local_proxy.stop.none",
                     OperationalEventSeverity.Warning,
-                    "Stop requested but no local proxy session was running."),
+                    "Stop requested but no local Xray proxy session was running."),
                     cancellationToken);
                 return new LocalProxyRuntimeResult(true, "No local proxy session is running.", null);
             }
 
-            running.Stop();
+            await RefreshRuntimeStatsAsync(running, cancellationToken);
+            running.MarkStopped();
+            await running.Process.StopAsync();
             await PersistStoppedAsync(running, reason, LocalProxySessionStatus.Stopped, cancellationToken);
+            var response = await ToResponseAsync(running, cancellationToken);
             _running = null;
             await events.WriteAsync(new OperationalEventWrite(
                 "local_proxy.stop.completed",
                 OperationalEventSeverity.Information,
                 reason,
-                Details: new { running.ProfileId, running.SessionId, running.LocalPort }),
+                Details: new { running.ProfileId, running.SessionId, running.HttpPort, running.SocksPort }),
                 cancellationToken);
-            return new LocalProxyRuntimeResult(true, reason, await ToResponseAsync(running, cancellationToken));
+            return new LocalProxyRuntimeResult(true, reason, response);
         }
         finally
         {
@@ -173,47 +241,73 @@ public sealed class LocalProxyRuntimeService(
             return new LocalProxyRuntimeResult(false, "No local proxy session is running.", null);
         }
 
+        var errors = new List<string>();
         try
         {
-            using var handler = new HttpClientHandler
-            {
-                Proxy = new WebProxy($"http://127.0.0.1:{running.LocalPort}"),
-                UseProxy = true
-            };
-            if (running.RequiresAuthentication)
-            {
-                handler.Proxy.Credentials = new NetworkCredential(running.ProxyUsername, running.ProxyPassword);
-            }
-
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
-            using var request = new HttpRequestMessage(HttpMethod.Get, _options.ProbeUrl);
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            await ProbeHttpAsync(running, cancellationToken);
             await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.probe.success",
+                "local_proxy.probe.http.success",
                 OperationalEventSeverity.Information,
-                $"Local proxy probe returned {(int)response.StatusCode}.",
-                Details: new { running.ProfileId, running.SessionId, running.LocalPort, StatusCode = (int)response.StatusCode }),
+                "Local Xray HTTP proxy probe succeeded.",
+                Details: new { running.ProfileId, running.SessionId, running.HttpPort }),
                 cancellationToken);
-            return new LocalProxyRuntimeResult(true, "Local proxy probe succeeded.", await ToResponseAsync(running, cancellationToken));
         }
         catch (Exception ex)
         {
+            errors.Add($"HTTP: {ex.Message}");
             await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.probe.failure",
+                "local_proxy.probe.http.failure",
                 OperationalEventSeverity.Error,
-                "Local proxy probe failed.",
+                "Local Xray HTTP proxy probe failed.",
                 StandardError: ex.Message,
-                Details: new { running.ProfileId, running.SessionId, running.LocalPort }),
+                Details: new { running.ProfileId, running.SessionId, running.HttpPort }),
                 cancellationToken);
-            await SetLastErrorAsync(running, ex.Message, cancellationToken);
-            return new LocalProxyRuntimeResult(false, $"Local proxy probe failed: {ex.Message}", await ToResponseAsync(running, cancellationToken));
         }
+
+        try
+        {
+            await ProbeSocksAsync(running, cancellationToken);
+            await events.WriteAsync(new OperationalEventWrite(
+                "local_proxy.probe.socks.success",
+                OperationalEventSeverity.Information,
+                "Local Xray SOCKS proxy probe succeeded.",
+                Details: new { running.ProfileId, running.SessionId, running.SocksPort }),
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"SOCKS: {ex.Message}");
+            await events.WriteAsync(new OperationalEventWrite(
+                "local_proxy.probe.socks.failure",
+                OperationalEventSeverity.Error,
+                "Local Xray SOCKS proxy probe failed.",
+                StandardError: ex.Message,
+                Details: new { running.ProfileId, running.SessionId, running.SocksPort }),
+                cancellationToken);
+        }
+
+        await RefreshRuntimeStatsAsync(running, cancellationToken);
+        if (errors.Count == 0)
+        {
+            await SetLastErrorAsync(running, null, cancellationToken);
+            return new LocalProxyRuntimeResult(true, "Local Xray HTTP and SOCKS probes succeeded.", await ToResponseAsync(running, cancellationToken));
+        }
+
+        var message = string.Join(" ", errors);
+        await SetLastErrorAsync(running, message, cancellationToken);
+        return new LocalProxyRuntimeResult(false, $"Local Xray proxy probe failed: {message}", await ToResponseAsync(running, cancellationToken));
     }
 
     public async Task<LocalProxyRuntimeState?> GetActiveAsync(CancellationToken cancellationToken)
     {
         var running = _running;
-        return running is null || running.IsStopped ? null : await ToResponseAsync(running, cancellationToken);
+        if (running is null || running.IsStopped)
+        {
+            return null;
+        }
+
+        await RefreshRuntimeStatsAsync(running, cancellationToken);
+        return await ToResponseAsync(running, cancellationToken);
     }
 
     public async Task StopIfIdleAsync(CancellationToken cancellationToken)
@@ -224,6 +318,7 @@ public sealed class LocalProxyRuntimeService(
             return;
         }
 
+        await RefreshRuntimeStatsAsync(running, cancellationToken);
         var idleFor = clock.UtcNow - running.LastActivityAt;
         if (idleFor < TimeSpan.FromMinutes(running.IdleShutdownMinutes))
         {
@@ -234,168 +329,203 @@ public sealed class LocalProxyRuntimeService(
         await events.WriteAsync(new OperationalEventWrite(
             "local_proxy.idle.timeout",
             OperationalEventSeverity.Information,
-            "Stopped local proxy after idle timeout.",
+            "Stopped local Xray proxy after idle timeout.",
             Details: new { running.ProfileId, running.SessionId, IdleMinutes = idleFor.TotalMinutes, running.IdleShutdownMinutes }),
             cancellationToken);
     }
 
-    private async Task AcceptLoopAsync(RunningLocalProxy running)
+    private async Task MonitorProcessAsync(RunningLocalProxy running)
     {
         try
         {
-            while (!running.Cancellation.IsCancellationRequested)
+            await running.Process.Completion;
+            if (running.IsStopped)
             {
-                var client = await running.Listener.AcceptTcpClientAsync(running.Cancellation);
-                _ = Task.Run(() => HandleClientAsync(running, client), CancellationToken.None);
+                return;
             }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
+
+            await SetLastErrorAsync(running, running.Process.StandardError, CancellationToken.None);
+            await PersistStoppedAsync(running, "Xray process exited unexpectedly.", LocalProxySessionStatus.Error, CancellationToken.None);
+            if (ReferenceEquals(_running, running))
+            {
+                _running = null;
+            }
+
+            await events.WriteAsync(new OperationalEventWrite(
+                "local_proxy.xray.exited",
+                OperationalEventSeverity.Error,
+                "Xray process exited unexpectedly.",
+                StandardError: running.Process.StandardError,
+                Details: new { running.ProfileId, running.SessionId, running.Process.ProcessId }),
+                CancellationToken.None);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Local proxy accept loop failed.");
-            await SetLastErrorAsync(running, ex.Message, CancellationToken.None);
-            await PersistStoppedAsync(running, ex.Message, LocalProxySessionStatus.Error, CancellationToken.None);
-            await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.listener.failed",
-                OperationalEventSeverity.Error,
-                "Local proxy listener failed.",
-                StandardError: ex.Message,
-                Details: new { running.ProfileId, running.SessionId, running.LocalPort }),
-                CancellationToken.None);
+            logger.LogError(ex, "Failed to monitor Xray process.");
         }
     }
 
-    private async Task HandleClientAsync(RunningLocalProxy running, TcpClient client)
+    private async Task ProbeHttpAsync(RunningLocalProxy running, CancellationToken cancellationToken)
     {
-        Interlocked.Increment(ref running.ActiveConnections);
-        var bytesReceived = 0L;
-        var bytesSent = 0L;
-        string? target = null;
-        try
+        using var handler = new HttpClientHandler
         {
-            using var _ = client;
-            client.NoDelay = true;
-            var clientStream = client.GetStream();
-            var head = await ReadRequestHeadAsync(clientStream, running.Cancellation);
-            if (head is null)
-            {
-                return;
-            }
-
-            bytesReceived += head.TotalBytesRead;
-            if (!IsAuthorized(running, head.Headers))
-            {
-                await WriteProxyAuthenticationRequiredAsync(clientStream, running.Cancellation);
-                await events.WriteAsync(new OperationalEventWrite(
-                    "local_proxy.auth.failed",
-                    OperationalEventSeverity.Warning,
-                    "Rejected unauthenticated local proxy request.",
-                    Details: new { running.ProfileId, running.SessionId }),
-                    CancellationToken.None);
-                return;
-            }
-
-            if (head.Method.Equals("CONNECT", StringComparison.OrdinalIgnoreCase))
-            {
-                target = head.Target;
-                var connectResult = await HandleConnectAsync(running, clientStream, head, running.Cancellation);
-                bytesReceived += connectResult.BytesReceived;
-                bytesSent += connectResult.BytesSent;
-                Interlocked.Increment(ref running.TotalConnectTunnels);
-                return;
-            }
-
-            target = head.Target;
-            var forwardResult = await HandleHttpAsync(clientStream, head, running.Cancellation);
-            bytesReceived += forwardResult.BytesReceived;
-            bytesSent += forwardResult.BytesSent;
-        }
-        catch (Exception ex) when (ex is IOException or SocketException or InvalidOperationException or FormatException or OperationCanceledException)
+            Proxy = new WebProxy($"http://127.0.0.1:{running.HttpPort}"),
+            UseProxy = true
+        };
+        if (running.RequiresAuthentication)
         {
-            await SetLastErrorAsync(running, ex.Message, CancellationToken.None);
-            await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.request.failed",
-                OperationalEventSeverity.Warning,
-                "Local proxy request failed.",
-                StandardError: ex.Message,
-                Details: new { running.ProfileId, running.SessionId, Target = target }),
-                CancellationToken.None);
+            handler.Proxy.Credentials = new NetworkCredential(running.ProxyUsername, running.ProxyPassword);
         }
-        finally
-        {
-            Interlocked.Decrement(ref running.ActiveConnections);
-            await RecordRequestAsync(running, bytesReceived, bytesSent, CancellationToken.None);
-        }
+
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+        using var request = new HttpRequestMessage(HttpMethod.Get, _options.ProbeUrl);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
     }
 
-    private static async Task<TransferResult> HandleConnectAsync(RunningLocalProxy running, NetworkStream clientStream, ProxyRequestHead head, CancellationToken cancellationToken)
+    private async Task ProbeSocksAsync(RunningLocalProxy running, CancellationToken cancellationToken)
     {
-        var (host, port) = ParseHostPort(head.Target, 443);
-        using var target = new TcpClient();
-        await target.ConnectAsync(host, port, cancellationToken);
-        await clientStream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 Connection Established\r\n\r\n"), cancellationToken);
-        if (head.Leftover.Length > 0)
+        var uri = new Uri(_options.ProbeUrl);
+        var port = uri.Port > 0 ? uri.Port : uri.Scheme == Uri.UriSchemeHttps ? 443 : 80;
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, running.SocksPort, cancellationToken);
+        await using var stream = client.GetStream();
+
+        var methods = running.RequiresAuthentication
+            ? new byte[] { 0x05, 0x01, 0x02 }
+            : [0x05, 0x01, 0x00];
+        await stream.WriteAsync(methods, cancellationToken);
+        var selection = await ReadExactAsync(stream, 2, cancellationToken);
+        if (selection[0] != 0x05 || selection[1] == 0xff)
         {
-            await target.GetStream().WriteAsync(head.Leftover, cancellationToken);
+            throw new InvalidOperationException("SOCKS server rejected authentication methods.");
         }
 
-        var targetStream = target.GetStream();
-        using var tunnelCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var clientToTarget = CopyWithCountAsync(clientStream, targetStream, tunnelCts.Token);
-        var targetToClient = CopyWithCountAsync(targetStream, clientStream, tunnelCts.Token);
-        var completed = await Task.WhenAny(clientToTarget, targetToClient);
-        tunnelCts.Cancel();
-        var first = await completed;
-        var second = 0L;
+        if (selection[1] == 0x02)
+        {
+            await WriteSocksUserPasswordAsync(stream, running.ProxyUsername!, running.ProxyPassword!, cancellationToken);
+            var auth = await ReadExactAsync(stream, 2, cancellationToken);
+            if (auth[1] != 0x00)
+            {
+                throw new InvalidOperationException("SOCKS username/password authentication failed.");
+            }
+        }
+
+        var hostBytes = Encoding.ASCII.GetBytes(uri.Host);
+        if (hostBytes.Length > 255)
+        {
+            throw new InvalidOperationException("SOCKS probe host name is too long.");
+        }
+
+        var request = new byte[7 + hostBytes.Length];
+        request[0] = 0x05;
+        request[1] = 0x01;
+        request[2] = 0x00;
+        request[3] = 0x03;
+        request[4] = (byte)hostBytes.Length;
+        Array.Copy(hostBytes, 0, request, 5, hostBytes.Length);
+        request[^2] = (byte)(port >> 8);
+        request[^1] = (byte)(port & 0xff);
+        await stream.WriteAsync(request, cancellationToken);
+
+        var responseHead = await ReadExactAsync(stream, 4, cancellationToken);
+        if (responseHead[0] != 0x05 || responseHead[1] != 0x00)
+        {
+            throw new InvalidOperationException($"SOCKS connect failed with code {responseHead[1]}.");
+        }
+
+        var addressLength = responseHead[3] switch
+        {
+            0x01 => 4,
+            0x03 => (await ReadExactAsync(stream, 1, cancellationToken))[0],
+            0x04 => 16,
+            _ => throw new InvalidOperationException("SOCKS server returned an unsupported address type.")
+        };
+        await ReadExactAsync(stream, addressLength + 2, cancellationToken);
+    }
+
+    private static async Task WriteSocksUserPasswordAsync(Stream stream, string username, string password, CancellationToken cancellationToken)
+    {
+        var usernameBytes = Encoding.UTF8.GetBytes(username);
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        if (usernameBytes.Length > 255 || passwordBytes.Length > 255)
+        {
+            throw new InvalidOperationException("SOCKS username and password must be 255 bytes or shorter.");
+        }
+
+        var payload = new byte[3 + usernameBytes.Length + passwordBytes.Length];
+        payload[0] = 0x01;
+        payload[1] = (byte)usernameBytes.Length;
+        Array.Copy(usernameBytes, 0, payload, 2, usernameBytes.Length);
+        payload[2 + usernameBytes.Length] = (byte)passwordBytes.Length;
+        Array.Copy(passwordBytes, 0, payload, 3 + usernameBytes.Length, passwordBytes.Length);
+        await stream.WriteAsync(payload, cancellationToken);
+    }
+
+    private static async Task<byte[]> ReadExactAsync(Stream stream, int length, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[length];
+        var offset = 0;
+        while (offset < length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(offset, length - offset), cancellationToken);
+            if (read == 0)
+            {
+                throw new IOException("Unexpected end of SOCKS response.");
+            }
+
+            offset += read;
+        }
+
+        return buffer;
+    }
+
+    private async Task<bool> WaitForPortsAsync(RunningLocalProxy running, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var stopAt = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < stopAt && !running.Process.HasExited)
+        {
+            if (await CanConnectAsync(running.HttpPort, cancellationToken) &&
+                await CanConnectAsync(running.SocksPort, cancellationToken))
+            {
+                return true;
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        return false;
+    }
+
+    private static async Task<bool> CanConnectAsync(int port, CancellationToken cancellationToken)
+    {
         try
         {
-            second = completed == clientToTarget ? await targetToClient : await clientToTarget;
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port, cancellationToken);
+            return true;
         }
         catch
         {
-            // One side of a tunnel often closes first.
+            return false;
         }
-
-        return new TransferResult(first + head.Leftover.Length, second);
     }
 
-    private static async Task<TransferResult> HandleHttpAsync(NetworkStream clientStream, ProxyRequestHead head, CancellationToken cancellationToken)
+    private async Task RefreshRuntimeStatsAsync(RunningLocalProxy running, CancellationToken cancellationToken)
     {
-        if (!Uri.TryCreate(head.Target, UriKind.Absolute, out var uri) ||
-            !string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        if (!File.Exists(running.AccessLogPath))
         {
-            await WriteSimpleResponseAsync(clientStream, "400 Bad Request", "Only absolute http:// proxy requests are supported outside CONNECT.", cancellationToken);
-            return new TransferResult(0, 0);
+            return;
         }
 
-        using var target = new TcpClient();
-        await target.ConnectAsync(uri.Host, uri.Port > 0 ? uri.Port : 80, cancellationToken);
-        var targetStream = target.GetStream();
-        var requestBytes = RewriteHttpRequest(head, uri);
-        await targetStream.WriteAsync(requestBytes, cancellationToken);
-        if (head.Leftover.Length > 0)
+        var requestCount = File.ReadLines(running.AccessLogPath).LongCount();
+        if (requestCount <= running.TotalRequests)
         {
-            await targetStream.WriteAsync(head.Leftover, cancellationToken);
+            return;
         }
 
-        var contentLength = GetContentLength(head.Headers);
-        var remainingBodyBytes = Math.Max(0, contentLength - head.Leftover.Length);
-        var uploaded = head.Leftover.Length + await CopyExactlyAsync(clientStream, targetStream, remainingBodyBytes, cancellationToken);
-        var downloaded = await CopyWithCountAsync(targetStream, clientStream, cancellationToken);
-        return new TransferResult(uploaded, downloaded);
-    }
-
-    private async Task RecordRequestAsync(RunningLocalProxy running, long bytesReceived, long bytesSent, CancellationToken cancellationToken)
-    {
-        running.LastActivityAt = clock.UtcNow;
-        Interlocked.Increment(ref running.TotalRequests);
-        Interlocked.Add(ref running.TotalBytesReceived, bytesReceived);
-        Interlocked.Add(ref running.TotalBytesSent, bytesSent);
+        running.TotalRequests = requestCount;
+        running.LastActivityAt = File.GetLastWriteTimeUtc(running.AccessLogPath);
 
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -407,15 +537,12 @@ public sealed class LocalProxyRuntimeService(
 
         session.LastActivityAt = running.LastActivityAt;
         session.TotalRequests = running.TotalRequests;
-        session.TotalConnectTunnels = running.TotalConnectTunnels;
-        session.TotalBytesReceived = running.TotalBytesReceived;
-        session.TotalBytesSent = running.TotalBytesSent;
         await db.SaveChangesAsync(cancellationToken);
         await events.WriteAsync(new OperationalEventWrite(
-            "local_proxy.request.completed",
+            "local_proxy.activity.observed",
             OperationalEventSeverity.Debug,
-            "Local proxy request completed.",
-            Details: new { running.ProfileId, running.SessionId, bytesReceived, bytesSent }),
+            "Observed Xray access log activity.",
+            Details: new { running.ProfileId, running.SessionId, running.TotalRequests }),
             cancellationToken);
     }
 
@@ -431,9 +558,9 @@ public sealed class LocalProxyRuntimeService(
             session.StoppedAt = clock.UtcNow;
             session.LastError = status == LocalProxySessionStatus.Error ? reason : session.LastError;
             session.TotalRequests = running.TotalRequests;
-            session.TotalConnectTunnels = running.TotalConnectTunnels;
-            session.TotalBytesReceived = running.TotalBytesReceived;
-            session.TotalBytesSent = running.TotalBytesSent;
+            session.TotalConnectTunnels = 0;
+            session.TotalBytesReceived = 0;
+            session.TotalBytesSent = 0;
         }
 
         if (profile is not null)
@@ -445,7 +572,7 @@ public sealed class LocalProxyRuntimeService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task SetLastErrorAsync(RunningLocalProxy running, string error, CancellationToken cancellationToken)
+    private async Task SetLastErrorAsync(RunningLocalProxy running, string? error, CancellationToken cancellationToken)
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -464,12 +591,14 @@ public sealed class LocalProxyRuntimeService(
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var session = await db.LocalProxySessions.Include(x => x.Profile).FirstAsync(x => x.Id == running.SessionId, cancellationToken);
-        return ToRuntimeState(session, session.Profile!, running.ActiveConnections);
+        return ToRuntimeState(session, session.Profile!, 0);
     }
 
     private static LocalProxyRuntimeState ToRuntimeState(LocalProxySession session, LocalProxyProfile profile, int activeConnections)
     {
         var idleAt = session.LastActivityAt.AddMinutes(Math.Max(1, profile.IdleShutdownMinutes));
+        var httpProxyUrl = $"http://127.0.0.1:{session.LocalPort}";
+        var socksProxyUrl = $"socks5h://127.0.0.1:{session.SocksPort}";
         return new LocalProxyRuntimeState(
             session.Id,
             profile.Id,
@@ -477,7 +606,10 @@ public sealed class LocalProxyRuntimeService(
             session.Status,
             session.BindHost,
             session.LocalPort,
-            $"http://127.0.0.1:{session.LocalPort}",
+            session.SocksPort,
+            httpProxyUrl,
+            httpProxyUrl,
+            socksProxyUrl,
             session.StartedAt,
             session.LastActivityAt,
             idleAt,
@@ -490,6 +622,41 @@ public sealed class LocalProxyRuntimeService(
             activeConnections);
     }
 
+    private string GetRuntimeDirectory(Guid sessionId)
+    {
+        var root = string.IsNullOrWhiteSpace(_options.XrayConfigDirectory)
+            ? Path.Combine(environment.ContentRootPath, "data", "xray")
+            : _options.XrayConfigDirectory;
+        return Path.Combine(root, sessionId.ToString("N"));
+    }
+
+    private static string? TryGetUnavailablePortMessage(string bindHost, int httpPort, int socksPort)
+    {
+        if (httpPort == socksPort)
+        {
+            return "HTTP and SOCKS ports must be different.";
+        }
+
+        var bindAddress = ResolveBindAddress(bindHost);
+        return IsPortAvailable(bindAddress, httpPort)
+            ? IsPortAvailable(bindAddress, socksPort) ? null : $"SOCKS port {socksPort} is unavailable."
+            : $"HTTP port {httpPort} is unavailable.";
+    }
+
+    private static bool IsPortAvailable(IPAddress bindAddress, int port)
+    {
+        try
+        {
+            using var listener = new TcpListener(bindAddress, port);
+            listener.Start();
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
     private static IPAddress ResolveBindAddress(string bindHost)
     {
         if (string.Equals(bindHost, "localhost", StringComparison.OrdinalIgnoreCase))
@@ -500,252 +667,46 @@ public sealed class LocalProxyRuntimeService(
         return IPAddress.TryParse(bindHost, out var address) ? address : IPAddress.Loopback;
     }
 
-    private static async Task<ProxyRequestHead?> ReadRequestHeadAsync(NetworkStream stream, CancellationToken cancellationToken)
-    {
-        var buffer = ArrayPool<byte>.Shared.Rent(8192);
-        try
-        {
-            using var data = new MemoryStream();
-            while (data.Length < 65536)
-            {
-                var read = await stream.ReadAsync(buffer, cancellationToken);
-                if (read == 0)
-                {
-                    return null;
-                }
-
-                data.Write(buffer, 0, read);
-                var bytes = data.ToArray();
-                var headerEnd = FindHeaderEnd(bytes);
-                if (headerEnd < 0)
-                {
-                    continue;
-                }
-
-                var headerBytes = bytes[..headerEnd];
-                var leftover = bytes[(headerEnd + 4)..];
-                var headerText = Encoding.ASCII.GetString(headerBytes);
-                var lines = headerText.Split("\r\n", StringSplitOptions.None);
-                var requestLine = lines[0].Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-                if (requestLine.Length < 3)
-                {
-                    throw new FormatException("Invalid proxy request line.");
-                }
-
-                var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var line in lines.Skip(1))
-                {
-                    var separator = line.IndexOf(':', StringComparison.Ordinal);
-                    if (separator <= 0)
-                    {
-                        continue;
-                    }
-
-                    headers[line[..separator].Trim()] = line[(separator + 1)..].Trim();
-                }
-
-                return new ProxyRequestHead(requestLine[0], requestLine[1], requestLine[2], headers, leftover, bytes.Length);
-            }
-
-            throw new InvalidOperationException("Proxy request headers exceeded the 64 KB limit.");
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-    }
-
-    private static bool IsAuthorized(RunningLocalProxy running, IReadOnlyDictionary<string, string> headers)
-    {
-        if (!running.RequiresAuthentication)
-        {
-            return true;
-        }
-
-        if (!headers.TryGetValue("Proxy-Authorization", out var value) ||
-            !AuthenticationHeaderValue.TryParse(value, out var header) ||
-            !string.Equals(header.Scheme, "Basic", StringComparison.OrdinalIgnoreCase) ||
-            string.IsNullOrWhiteSpace(header.Parameter))
-        {
-            return false;
-        }
-
-        var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(header.Parameter));
-        return string.Equals(decoded, $"{running.ProxyUsername}:{running.ProxyPassword}", StringComparison.Ordinal);
-    }
-
-    private static byte[] RewriteHttpRequest(ProxyRequestHead head, Uri uri)
-    {
-        var path = string.IsNullOrEmpty(uri.PathAndQuery) ? "/" : uri.PathAndQuery;
-        var builder = new StringBuilder();
-        builder.Append(head.Method).Append(' ').Append(path).Append(' ').Append(head.Version).Append("\r\n");
-        var hasHost = false;
-        foreach (var (name, value) in head.Headers)
-        {
-            if (name.Equals("Proxy-Authorization", StringComparison.OrdinalIgnoreCase) ||
-                name.Equals("Proxy-Connection", StringComparison.OrdinalIgnoreCase) ||
-                name.Equals("Connection", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (name.Equals("Host", StringComparison.OrdinalIgnoreCase))
-            {
-                hasHost = true;
-            }
-
-            builder.Append(name).Append(": ").Append(value).Append("\r\n");
-        }
-
-        if (!hasHost)
-        {
-            builder.Append("Host: ").Append(uri.Authority).Append("\r\n");
-        }
-
-        builder.Append("Connection: close\r\n\r\n");
-        return Encoding.ASCII.GetBytes(builder.ToString());
-    }
-
-    private static long GetContentLength(IReadOnlyDictionary<string, string> headers) =>
-        headers.TryGetValue("Content-Length", out var value) && long.TryParse(value, out var length) ? length : 0;
-
-    private static async Task<long> CopyExactlyAsync(Stream source, Stream destination, long byteCount, CancellationToken cancellationToken)
-    {
-        var buffer = ArrayPool<byte>.Shared.Rent(8192);
-        var copied = 0L;
-        try
-        {
-            while (copied < byteCount)
-            {
-                var read = await source.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, byteCount - copied)), cancellationToken);
-                if (read == 0)
-                {
-                    break;
-                }
-
-                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-                copied += read;
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-
-        return copied;
-    }
-
-    private static async Task<long> CopyWithCountAsync(Stream source, Stream destination, CancellationToken cancellationToken)
-    {
-        var buffer = ArrayPool<byte>.Shared.Rent(8192);
-        var copied = 0L;
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                var read = await source.ReadAsync(buffer, cancellationToken);
-                if (read == 0)
-                {
-                    break;
-                }
-
-                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-                copied += read;
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-
-        return copied;
-    }
-
-    private static (string Host, int Port) ParseHostPort(string value, int defaultPort)
-    {
-        var parts = value.Split(':', 2);
-        return parts.Length == 2 && int.TryParse(parts[1], out var port)
-            ? (parts[0], port)
-            : (value, defaultPort);
-    }
-
-    private static int FindHeaderEnd(byte[] data)
-    {
-        for (var index = 0; index <= data.Length - 4; index++)
-        {
-            if (data[index] == '\r' && data[index + 1] == '\n' && data[index + 2] == '\r' && data[index + 3] == '\n')
-            {
-                return index;
-            }
-        }
-
-        return -1;
-    }
-
-    private static async Task WriteProxyAuthenticationRequiredAsync(Stream stream, CancellationToken cancellationToken) =>
-        await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"GhProxy\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), cancellationToken);
-
-    private static async Task WriteSimpleResponseAsync(Stream stream, string status, string message, CancellationToken cancellationToken)
-    {
-        var body = Encoding.UTF8.GetBytes(message);
-        var head = Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
-        await stream.WriteAsync(head, cancellationToken);
-        await stream.WriteAsync(body, cancellationToken);
-    }
-
     private sealed class RunningLocalProxy(
         Guid profileId,
         string profileName,
         Guid sessionId,
         string bindHost,
-        int localPort,
+        int httpPort,
+        int socksPort,
         string? proxyUsername,
         string? proxyPassword,
         int idleShutdownMinutes,
-        TcpListener listener)
+        XrayProcessHandle process,
+        string configPath,
+        string accessLogPath,
+        string errorLogPath)
     {
-        private readonly CancellationTokenSource _cts = new();
+        private bool _stopped;
 
         public Guid ProfileId { get; } = profileId;
         public string ProfileName { get; } = profileName;
         public Guid SessionId { get; } = sessionId;
         public string BindHost { get; } = bindHost;
-        public int LocalPort { get; } = localPort;
+        public int HttpPort { get; } = httpPort;
+        public int SocksPort { get; } = socksPort;
         public string? ProxyUsername { get; } = proxyUsername;
         public string? ProxyPassword { get; } = proxyPassword;
         public int IdleShutdownMinutes { get; } = idleShutdownMinutes;
-        public TcpListener Listener { get; } = listener;
-        public CancellationToken Cancellation => _cts.Token;
+        public XrayProcessHandle Process { get; } = process;
+        public string ConfigPath { get; } = configPath;
+        public string AccessLogPath { get; } = accessLogPath;
+        public string ErrorLogPath { get; } = errorLogPath;
         public bool RequiresAuthentication => !string.IsNullOrWhiteSpace(ProxyUsername) && !string.IsNullOrWhiteSpace(ProxyPassword);
-        public bool IsStopped => _cts.IsCancellationRequested;
+        public bool IsStopped => _stopped;
         public DateTimeOffset LastActivityAt;
         public long TotalRequests;
-        public long TotalConnectTunnels;
-        public long TotalBytesReceived;
-        public long TotalBytesSent;
-        public int ActiveConnections;
 
-        public void Stop()
+        public void MarkStopped()
         {
-            if (_cts.IsCancellationRequested)
-            {
-                return;
-            }
-
-            _cts.Cancel();
-            Listener.Stop();
+            _stopped = true;
         }
     }
-
-    private sealed record ProxyRequestHead(
-        string Method,
-        string Target,
-        string Version,
-        IReadOnlyDictionary<string, string> Headers,
-        byte[] Leftover,
-        long TotalBytesRead);
-
-    private sealed record TransferResult(long BytesReceived, long BytesSent);
 }
 
 public sealed record LocalProxyRuntimeState(
@@ -755,7 +716,10 @@ public sealed record LocalProxyRuntimeState(
     LocalProxySessionStatus Status,
     string BindHost,
     int LocalPort,
+    int SocksPort,
     string ProxyUrl,
+    string HttpProxyUrl,
+    string SocksProxyUrl,
     DateTimeOffset StartedAt,
     DateTimeOffset LastActivityAt,
     DateTimeOffset IdleShutdownAt,

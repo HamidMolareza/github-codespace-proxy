@@ -97,13 +97,14 @@ public static class ObservabilityEndpoints
                 lastError is null ? null : ToResponse(lastError)));
         });
 
-        group.MapGet("/diagnostics/runtime", async (AppDbContext db, IOptions<GitHubOptions> options, CancellationToken ct) =>
+        group.MapGet("/diagnostics/runtime", async (AppDbContext db, IOptions<GitHubOptions> githubOptions, IOptions<LocalProxyOptions> localProxyOptions, IHostEnvironment environment, CancellationToken ct) =>
         {
             var databaseAvailable = await db.Database.CanConnectAsync(ct);
             var tools = new List<ToolDiagnosticResponse>
             {
-                new("GitHub API", Uri.TryCreate(options.Value.ApiBaseUrl, UriKind.Absolute, out _), options.Value.ApiBaseUrl),
-                new("Data Protection", Directory.Exists(Path.Combine(AppContext.BaseDirectory, "data", "keys")), "Keys are persisted under the app data directory.")
+                new("GitHub API", Uri.TryCreate(githubOptions.Value.ApiBaseUrl, UriKind.Absolute, out _), githubOptions.Value.ApiBaseUrl),
+                new("Data Protection", Directory.Exists(Path.Combine(environment.ContentRootPath, "data", "keys")), "Keys are persisted under the app data directory."),
+                new("Xray", ResolveExecutable(localProxyOptions.Value.XrayExecutablePath) is not null, localProxyOptions.Value.XrayExecutablePath)
             };
 
             return Results.Ok(new RuntimeDiagnosticsResponse(databaseAvailable, tools));
@@ -131,5 +132,30 @@ public static class ObservabilityEndpoints
             evt.StandardOutputSnippet,
             evt.StandardErrorSnippet,
             evt.DetailsJson);
+    }
+
+    private static string? ResolveExecutable(string executablePath)
+    {
+        if (Path.IsPathRooted(executablePath) && File.Exists(executablePath))
+        {
+            return executablePath;
+        }
+
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = Path.Combine(directory, executablePath);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }

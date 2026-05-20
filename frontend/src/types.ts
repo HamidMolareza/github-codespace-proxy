@@ -31,6 +31,7 @@ export interface LocalProxyProfile {
   name: string;
   bindHost: string;
   localPort: number;
+  socksPort: number;
   proxyUsername?: string | null;
   requiresAuthentication: boolean;
   idleShutdownMinutes: number;
@@ -44,6 +45,7 @@ export interface LocalProxyProfileForm {
   name: string;
   bindHost: string;
   localPort: number;
+  socksPort: number;
   proxyUsername: string;
   proxyPassword: string;
   idleShutdownMinutes: number;
@@ -57,7 +59,10 @@ export interface LocalProxySession {
   status: LocalProxySessionStatus;
   bindHost: string;
   localPort: number;
+  socksPort: number;
   proxyUrl: string;
+  httpProxyUrl: string;
+  socksProxyUrl: string;
   startedAt: string;
   lastActivityAt: string;
   idleShutdownAt: string;

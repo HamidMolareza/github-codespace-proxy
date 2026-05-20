@@ -20,7 +20,8 @@ public static class LocalProxyEndpoints
 
         group.MapPost("/profiles", async (LocalProxyProfileRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
         {
-            var validation = Validate(request, requirePasswordForNewAuth: true);
+            var socksPort = request.SocksPort ?? 8902;
+            var validation = await ValidateAsync(request, socksPort, db, null, requirePasswordForNewAuth: true, ct);
             if (validation is not null)
             {
                 return Results.BadRequest(validation);
@@ -38,6 +39,7 @@ public static class LocalProxyEndpoints
                 Name = name,
                 BindHost = request.BindHost.Trim(),
                 LocalPort = request.LocalPort,
+                SocksPort = socksPort,
                 ProxyUsername = NullIfEmpty(request.ProxyUsername),
                 ProtectedProxyPassword = string.IsNullOrWhiteSpace(request.ProxyPassword) ? null : secrets.Protect(request.ProxyPassword.Trim()),
                 IdleShutdownMinutes = request.IdleShutdownMinutes,
@@ -62,7 +64,8 @@ public static class LocalProxyEndpoints
 
             var wantsAuth = !string.IsNullOrWhiteSpace(request.ProxyUsername);
             var hasExistingPassword = !string.IsNullOrWhiteSpace(profile.ProtectedProxyPassword);
-            var validation = Validate(request, requirePasswordForNewAuth: wantsAuth && !hasExistingPassword);
+            var socksPort = request.SocksPort ?? profile.SocksPort;
+            var validation = await ValidateAsync(request, socksPort, db, id, requirePasswordForNewAuth: wantsAuth && !hasExistingPassword, ct);
             if (validation is not null)
             {
                 return Results.BadRequest(validation);
@@ -77,6 +80,7 @@ public static class LocalProxyEndpoints
             profile.Name = name;
             profile.BindHost = request.BindHost.Trim();
             profile.LocalPort = request.LocalPort;
+            profile.SocksPort = socksPort;
             profile.ProxyUsername = NullIfEmpty(request.ProxyUsername);
             if (string.IsNullOrWhiteSpace(request.ProxyUsername))
             {
@@ -148,6 +152,7 @@ public static class LocalProxyEndpoints
             profile.Name,
             profile.BindHost,
             profile.LocalPort,
+            profile.SocksPort,
             profile.ProxyUsername,
             !string.IsNullOrWhiteSpace(profile.ProxyUsername) && !string.IsNullOrWhiteSpace(profile.ProtectedProxyPassword),
             profile.IdleShutdownMinutes,
@@ -166,7 +171,10 @@ public static class LocalProxyEndpoints
                 state.Status,
                 state.BindHost,
                 state.LocalPort,
+                state.SocksPort,
                 state.ProxyUrl,
+                state.HttpProxyUrl,
+                state.SocksProxyUrl,
                 state.StartedAt,
                 state.LastActivityAt,
                 state.IdleShutdownAt,
@@ -178,12 +186,32 @@ public static class LocalProxyEndpoints
                 state.TotalBytesSent,
                 state.ActiveConnections);
 
-    private static object? Validate(LocalProxyProfileRequest request, bool requirePasswordForNewAuth)
+    private static async Task<object?> ValidateAsync(LocalProxyProfileRequest request, int socksPort, AppDbContext db, Guid? existingProfileId, bool requirePasswordForNewAuth, CancellationToken ct)
     {
         var errors = new Dictionary<string, string[]>();
         AddRequired(errors, nameof(request.Name), request.Name);
         AddRequired(errors, nameof(request.BindHost), request.BindHost);
         AddPort(errors, nameof(request.LocalPort), request.LocalPort);
+        AddPort(errors, nameof(request.SocksPort), socksPort);
+        if (request.LocalPort == socksPort)
+        {
+            errors[nameof(request.SocksPort)] = ["SOCKS port must be different from HTTP port."];
+        }
+
+        var portOwner = await db.LocalProxyProfiles
+            .AsNoTracking()
+            .Where(x => existingProfileId == null || x.Id != existingProfileId)
+            .Where(x => x.LocalPort == request.LocalPort ||
+                        x.SocksPort == request.LocalPort ||
+                        x.LocalPort == socksPort ||
+                        x.SocksPort == socksPort)
+            .Select(x => x.Name)
+            .FirstOrDefaultAsync(ct);
+        if (portOwner is not null)
+        {
+            errors[nameof(request.LocalPort)] = [$"HTTP/SOCKS port overlaps with profile \"{portOwner}\"."];
+        }
+
         if (request.IdleShutdownMinutes is < 1 or > 1440)
         {
             errors[nameof(request.IdleShutdownMinutes)] = ["Idle shutdown must be between 1 and 1440 minutes."];

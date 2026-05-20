@@ -1,11 +1,13 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
+using System.Text.Json;
 using GhProxy.Api.Data;
 using GhProxy.Api.Domain;
 using GhProxy.Api.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace GhProxy.Tests;
@@ -13,98 +15,44 @@ namespace GhProxy.Tests;
 public sealed class LocalProxyRuntimeServiceTests
 {
     [Fact]
-    public async Task StartAsync_ForwardsHttpRequestsThroughLocalProxy()
+    public void XrayConfigRenderer_AddsHttpAndSocksInboundsWithDirectOutbound()
     {
-        await using var upstream = await LocalHttpServer.StartAsync();
-        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
-        await using var provider = CreateProvider(databasePath, upstream.Url);
-        try
-        {
-            var profile = await CreateProfileAsync(provider, localPort: GetFreePort());
-            var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
+        var config = new XrayConfigRenderer().Render(new XrayConfigRequest(
+            "127.0.0.1",
+            8901,
+            8902,
+            "/tmp/access.log",
+            "/tmp/error.log",
+            "user",
+            "pass"));
 
-            var started = await runtime.StartAsync(profile.Id, CancellationToken.None);
-
-            Assert.True(started.Succeeded, started.Message);
-            using var handler = new HttpClientHandler
-            {
-                Proxy = new WebProxy($"http://127.0.0.1:{profile.LocalPort}"),
-                UseProxy = true
-            };
-            using var client = new HttpClient(handler);
-
-            var response = await client.GetStringAsync(upstream.Url);
-
-            Assert.Equal("ok", response);
-            Assert.True(upstream.RequestCount >= 2);
-            await runtime.StopAsync("test completed", CancellationToken.None);
-        }
-        finally
-        {
-            DeleteDatabase(databasePath);
-        }
+        using var document = JsonDocument.Parse(config);
+        var root = document.RootElement;
+        var inbounds = root.GetProperty("inbounds").EnumerateArray().ToList();
+        Assert.Contains(inbounds, x => x.GetProperty("protocol").GetString() == "http" && x.GetProperty("port").GetInt32() == 8901);
+        var socks = inbounds.Single(x => x.GetProperty("protocol").GetString() == "socks");
+        Assert.Equal(8902, socks.GetProperty("port").GetInt32());
+        Assert.Equal("password", socks.GetProperty("settings").GetProperty("auth").GetString());
+        Assert.Equal("freedom", root.GetProperty("outbounds")[0].GetProperty("protocol").GetString());
     }
 
     [Fact]
-    public async Task StartAsync_EnforcesProxyAuthenticationWhenConfigured()
+    public async Task StartAsync_ReturnsFailureWhenHttpPortIsUnavailable()
     {
-        await using var upstream = await LocalHttpServer.StartAsync();
         var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
-        await using var provider = CreateProvider(databasePath, upstream.Url);
-        try
-        {
-            var profile = await CreateProfileAsync(provider, localPort: GetFreePort(), username: "user", password: "pass");
-            var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
-            var started = await runtime.StartAsync(profile.Id, CancellationToken.None);
-            Assert.True(started.Succeeded, started.Message);
-
-            using var rejectedHandler = new HttpClientHandler
-            {
-                Proxy = new WebProxy($"http://127.0.0.1:{profile.LocalPort}"),
-                UseProxy = true
-            };
-            using var rejectedClient = new HttpClient(rejectedHandler);
-            using var rejected = await rejectedClient.GetAsync(upstream.Url);
-            Assert.Equal(HttpStatusCode.ProxyAuthenticationRequired, rejected.StatusCode);
-
-            using var acceptedHandler = new HttpClientHandler
-            {
-                Proxy = new WebProxy($"http://127.0.0.1:{profile.LocalPort}")
-                {
-                    Credentials = new NetworkCredential("user", "pass")
-                },
-                UseProxy = true
-            };
-            using var acceptedClient = new HttpClient(acceptedHandler);
-            var body = await acceptedClient.GetStringAsync(upstream.Url);
-
-            Assert.Equal("ok", body);
-            await runtime.StopAsync("test completed", CancellationToken.None);
-        }
-        finally
-        {
-            DeleteDatabase(databasePath);
-        }
-    }
-
-    [Fact]
-    public async Task StartAsync_ReturnsFailureWhenPortIsUnavailable()
-    {
-        await using var upstream = await LocalHttpServer.StartAsync();
-        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
-        await using var provider = CreateProvider(databasePath, upstream.Url);
+        await using var provider = CreateProvider(databasePath);
         var occupiedPort = GetFreePort();
         var listener = new TcpListener(IPAddress.Loopback, occupiedPort);
         listener.Start();
         try
         {
-            var profile = await CreateProfileAsync(provider, localPort: occupiedPort);
+            var profile = await CreateProfileAsync(provider, localPort: occupiedPort, socksPort: GetFreePort());
             var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
 
             var result = await runtime.StartAsync(profile.Id, CancellationToken.None);
 
             Assert.False(result.Succeeded);
-            Assert.Contains("unavailable", result.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("HTTP port", result.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -113,15 +61,43 @@ public sealed class LocalProxyRuntimeServiceTests
         }
     }
 
-    private static ServiceProvider CreateProvider(string databasePath, string probeUrl)
+    [Fact]
+    public async Task StartAsync_ReturnsFailureWhenSocksPortIsUnavailable()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        await using var provider = CreateProvider(databasePath);
+        var occupiedPort = GetFreePort();
+        var listener = new TcpListener(IPAddress.Loopback, occupiedPort);
+        listener.Start();
+        try
+        {
+            var profile = await CreateProfileAsync(provider, localPort: GetFreePort(), socksPort: occupiedPort);
+            var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
+
+            var result = await runtime.StartAsync(profile.Id, CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("SOCKS port", result.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            listener.Stop();
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    private static ServiceProvider CreateProvider(string databasePath)
     {
         var services = new ServiceCollection();
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
         services.AddSingleton<ISecretProtector, PassThroughSecretProtector>();
         services.AddSingleton<IClock, TestClock>();
         services.AddSingleton<IOperationalEventSink, NoopOperationalEventSink>();
+        services.AddSingleton<XrayConfigRenderer>();
+        services.AddSingleton<IXrayProcessRunner, ThrowingXrayProcessRunner>();
+        services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(Path.GetTempPath()));
         services.AddLogging(builder => builder.AddDebug());
-        services.Configure<LocalProxyOptions>(options => options.ProbeUrl = probeUrl);
+        services.Configure<LocalProxyOptions>(options => options.ProbeUrl = "http://example.com/");
         services.AddSingleton<LocalProxyRuntimeService>();
         var provider = services.BuildServiceProvider();
 
@@ -131,7 +107,7 @@ public sealed class LocalProxyRuntimeServiceTests
         return provider;
     }
 
-    private static async Task<LocalProxyProfile> CreateProfileAsync(ServiceProvider provider, int localPort, string? username = null, string? password = null)
+    private static async Task<LocalProxyProfile> CreateProfileAsync(ServiceProvider provider, int localPort, int socksPort)
     {
         using var scope = provider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -141,8 +117,7 @@ public sealed class LocalProxyRuntimeServiceTests
             Name = $"test-{Guid.NewGuid():N}",
             BindHost = "127.0.0.1",
             LocalPort = localPort,
-            ProxyUsername = username,
-            ProtectedProxyPassword = password,
+            SocksPort = socksPort,
             IdleShutdownMinutes = 30,
             CreatedAt = now,
             UpdatedAt = now
@@ -169,81 +144,6 @@ public sealed class LocalProxyRuntimeServiceTests
         }
     }
 
-    private sealed class LocalHttpServer : IAsyncDisposable
-    {
-        private readonly TcpListener _listener;
-        private readonly CancellationTokenSource _cts = new();
-        private readonly Task _loop;
-        private int _requestCount;
-
-        private LocalHttpServer(TcpListener listener)
-        {
-            _listener = listener;
-            Url = $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}/";
-            _loop = Task.Run(AcceptLoopAsync);
-        }
-
-        public string Url { get; }
-        public int RequestCount => _requestCount;
-
-        public static Task<LocalHttpServer> StartAsync()
-        {
-            var listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            return Task.FromResult(new LocalHttpServer(listener));
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            _cts.Cancel();
-            _listener.Stop();
-            try
-            {
-                await _loop;
-            }
-            catch
-            {
-                // The listener is expected to throw when disposed.
-            }
-            _cts.Dispose();
-        }
-
-        private async Task AcceptLoopAsync()
-        {
-            while (!_cts.IsCancellationRequested)
-            {
-                using var client = await _listener.AcceptTcpClientAsync(_cts.Token);
-                Interlocked.Increment(ref _requestCount);
-                var stream = client.GetStream();
-                await ReadHeadersAsync(stream, _cts.Token);
-                var body = Encoding.UTF8.GetBytes("ok");
-                var response = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
-                await stream.WriteAsync(response, _cts.Token);
-                await stream.WriteAsync(body, _cts.Token);
-            }
-        }
-
-        private static async Task ReadHeadersAsync(NetworkStream stream, CancellationToken cancellationToken)
-        {
-            var buffer = new byte[1024];
-            var data = new List<byte>();
-            while (data.Count < 8192)
-            {
-                var read = await stream.ReadAsync(buffer, cancellationToken);
-                if (read == 0)
-                {
-                    return;
-                }
-
-                data.AddRange(buffer.Take(read));
-                if (Encoding.ASCII.GetString(data.ToArray()).Contains("\r\n\r\n", StringComparison.Ordinal))
-                {
-                    return;
-                }
-            }
-        }
-    }
-
     private sealed class PassThroughSecretProtector : ISecretProtector
     {
         public string Protect(string value) => value;
@@ -259,5 +159,19 @@ public sealed class LocalProxyRuntimeServiceTests
     {
         public Task WriteAsync(OperationalEventWrite entry, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    private sealed class ThrowingXrayProcessRunner : IXrayProcessRunner
+    {
+        public XrayProcessHandle Start(string executablePath, string configPath, string workingDirectory) =>
+            throw new InvalidOperationException("The test should fail during port preflight.");
+    }
+
+    private sealed class TestHostEnvironment(string contentRootPath) : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = Environments.Development;
+        public string ApplicationName { get; set; } = "GhProxy.Tests";
+        public string ContentRootPath { get; set; } = contentRootPath;
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 }

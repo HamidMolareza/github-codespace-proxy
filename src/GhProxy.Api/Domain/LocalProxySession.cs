@@ -8,6 +8,7 @@ public sealed class LocalProxySession
     public LocalProxySessionStatus Status { get; set; } = LocalProxySessionStatus.Starting;
     public string BindHost { get; set; } = "127.0.0.1";
     public int LocalPort { get; set; } = 8901;
+    public int SocksPort { get; set; } = 8902;
     public DateTimeOffset StartedAt { get; set; }
     public DateTimeOffset LastActivityAt { get; set; }
     public DateTimeOffset? StoppedAt { get; set; }

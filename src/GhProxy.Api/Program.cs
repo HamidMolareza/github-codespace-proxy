@@ -42,6 +42,8 @@ builder.Services.AddScoped<NodeConfigRenderer>();
 builder.Services.AddScoped<VpsRuntimeService>();
 builder.Services.AddScoped<TunnelService>();
 builder.Services.AddScoped<GitHubCodespaceService>();
+builder.Services.AddSingleton<XrayConfigRenderer>();
+builder.Services.AddSingleton<IXrayProcessRunner, XrayProcessRunner>();
 builder.Services.AddSingleton<LocalProxyRuntimeService>();
 builder.Services.AddHostedService<IdleShutdownService>();
 builder.Services.AddHostedService<LocalProxyIdleShutdownService>();

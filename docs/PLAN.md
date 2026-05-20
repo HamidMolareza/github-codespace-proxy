@@ -9,7 +9,7 @@ The active app workflow manages multiple GitHub username/PAT records and normal 
 1. Keep GitHub account and Codespace snapshot persistence.
 2. Restore the Codespaces UI for account CRUD, validation, usage, sync, and lifecycle actions.
 3. Add row refresh and lifecycle polling so start/stop/create progress is visible.
-4. Keep local proxy as a separate local-only tool.
+4. Keep local proxy as a separate Xray-backed direct local tool with HTTP and SOCKS endpoints.
 5. Keep shared Activity and diagnostics for GitHub and local proxy events.
 6. Update Docker/local docs and validation commands.
 7. Add tests for Codespace row refresh and preserve local proxy tests.

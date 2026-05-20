@@ -6,6 +6,7 @@ public sealed class LocalProxyProfile
     public string Name { get; set; } = "";
     public string BindHost { get; set; } = "127.0.0.1";
     public int LocalPort { get; set; } = 8901;
+    public int SocksPort { get; set; } = 8902;
     public string? ProxyUsername { get; set; }
     public string? ProtectedProxyPassword { get; set; }
     public int IdleShutdownMinutes { get; set; } = 30;

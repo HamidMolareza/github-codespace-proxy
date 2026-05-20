@@ -36,15 +36,16 @@ The app does not use Codespaces as a proxy backend, does not run `sp-proxy`, and
 1. Open `http://127.0.0.1:5173`.
 2. Create a local proxy profile.
 3. Keep `Bind host` as `127.0.0.1` for direct local runs.
-4. Keep `Local port` as `8901` unless that port is already in use.
+4. Keep `HTTP port` as `8901` and `SOCKS port` as `8902` unless those ports are already in use.
 5. Set username/password only if you want proxy authentication.
 6. Click Start.
-7. Wait for the ready endpoint, for example `http://127.0.0.1:8901`.
+7. Wait for the HTTP and SOCKS probes to succeed.
 
 Manual probe:
 
 ```bash
 curl -x http://127.0.0.1:8901 http://example.com/
+curl --socks5-hostname 127.0.0.1:8902 http://example.com/
 ```
 
 Shell proxy exports:
@@ -54,6 +55,8 @@ export HTTP_PROXY=http://127.0.0.1:8901
 export HTTPS_PROXY=http://127.0.0.1:8901
 export http_proxy=http://127.0.0.1:8901
 export https_proxy=http://127.0.0.1:8901
+export ALL_PROXY=socks5h://127.0.0.1:8902
+export all_proxy=socks5h://127.0.0.1:8902
 export NO_PROXY=localhost,127.0.0.1
 export no_proxy=localhost,127.0.0.1
 ```
@@ -63,7 +66,8 @@ export no_proxy=localhost,127.0.0.1
 The repository includes `compose.yml` for running both services:
 
 - `backend`: ASP.NET Core API on container port `8080`, published as `127.0.0.1:5080`.
-- `backend` proxy listener: container port `8901`, published as `127.0.0.1:8901`.
+- `backend` Xray HTTP proxy listener: container port `8901`, published as `127.0.0.1:8901`.
+- `backend` Xray SOCKS proxy listener: container port `8902`, published as `127.0.0.1:8902`.
 - `frontend`: Node serving the built React app on container port `8080`, published as `127.0.0.1:5173`.
 - `gh-proxy-data`: named volume for SQLite, JSONL logs, and Data Protection state.
 
@@ -79,7 +83,7 @@ Open:
 http://127.0.0.1:5173
 ```
 
-In Docker mode, Compose sets `LocalProxy__BindHostOverride=0.0.0.0` so the backend can accept Docker-published connections. The host exposure remains loopback-only through `127.0.0.1:8901:8901`.
+In Docker mode, Compose sets `LocalProxy__BindHostOverride=0.0.0.0` so Xray can accept Docker-published connections. The host exposure remains loopback-only through `127.0.0.1:8901:8901` and `127.0.0.1:8902:8902`.
 
 Smoke test:
 
@@ -104,7 +108,7 @@ docker compose down -v
 
 ## Idle Auto-Stop
 
-`LocalProxyIdleShutdownService` stops the active local proxy when there are no observed local proxy requests for the profile idle window.
+`LocalProxyIdleShutdownService` stops the active local Xray proxy when there are no observed Xray access-log requests for the profile idle window.
 
 The default idle window is stored per profile and defaults to 30 minutes.
 
@@ -129,7 +133,7 @@ Secrets are redacted before command output, command display strings, details JSO
 
 ## GitHub Codespaces
 
-The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The local proxy workflow does not depend on GitHub and does not use Codespaces as a proxy backend.
+The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The local Xray proxy workflow does not depend on GitHub and does not use Codespaces as a proxy backend.
 
 ## Git Commands In This Workspace
 
