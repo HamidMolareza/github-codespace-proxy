@@ -26,6 +26,7 @@ public sealed class IdleShutdownService(IServiceScopeFactory scopeFactory, IOpti
         var runner = scope.ServiceProvider.GetRequiredService<ICommandRunner>();
         var tunnelService = scope.ServiceProvider.GetRequiredService<TunnelService>();
         var clock = scope.ServiceProvider.GetRequiredService<IClock>();
+        var events = scope.ServiceProvider.GetRequiredService<IOperationalEventSink>();
 
         var sessions = await db.ProxySessions
             .Include(x => x.Node)
@@ -44,6 +45,14 @@ public sealed class IdleShutdownService(IServiceScopeFactory scopeFactory, IOpti
             if (idleFor >= TimeSpan.FromMinutes(Math.Max(1, _options.IdleShutdownMinutes)))
             {
                 logger.LogInformation("Stopping idle proxy session {SessionId} after {IdleMinutes:n1} minutes.", session.Id, idleFor.TotalMinutes);
+                await events.WriteAsync(new OperationalEventWrite(
+                    "session.idle.timeout",
+                    OperationalEventSeverity.Information,
+                    $"Stopping idle proxy session after {idleFor.TotalMinutes:n1} minutes.",
+                    NodeId: session.NodeId,
+                    SessionId: session.Id,
+                    Details: new { IdleMinutes = idleFor.TotalMinutes, _options.IdleShutdownMinutes }),
+                    cancellationToken);
                 await tunnelService.StopSessionAsync(session, "Stopped after idle timeout.", cancellationToken);
             }
         }
@@ -51,7 +60,7 @@ public sealed class IdleShutdownService(IServiceScopeFactory scopeFactory, IOpti
 
     private static async Task<bool> HasActiveLocalConnectionAsync(ICommandRunner runner, int localPort, CancellationToken cancellationToken)
     {
-        var result = await runner.RunAsync(new CommandSpec("ss", ["-Htn", $"sport = :{localPort}"], TimeSpan.FromSeconds(5)), cancellationToken);
+        var result = await runner.RunAsync(new CommandSpec("ss", ["-Htn", $"sport = :{localPort}"], TimeSpan.FromSeconds(5), "local.socket.probe"), cancellationToken);
         return result.Succeeded && !string.IsNullOrWhiteSpace(result.StandardOutput);
     }
 }

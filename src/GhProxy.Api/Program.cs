@@ -8,17 +8,23 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 builder.Services.Configure<ProxyRuntimeOptions>(builder.Configuration.GetSection("ProxyRuntime"));
+builder.Services.Configure<ObservabilityOptions>(builder.Configuration.GetSection("Observability"));
 builder.Services.AddDataProtection().SetApplicationName("GhProxy");
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? "Data Source=data/gh-proxy.db"));
 builder.Services.AddSingleton<IClock, SystemClock>();
+builder.Services.AddSingleton<ICorrelationContext, CorrelationContext>();
+builder.Services.AddSingleton<ISensitiveDataRedactor, SensitiveDataRedactor>();
+builder.Services.AddSingleton<IOperationalEventSink, OperationalEventSink>();
 builder.Services.AddSingleton<ICommandRunner, ProcessCommandRunner>();
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+builder.Services.AddScoped<DatabaseSchemaInitializer>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<NodeConfigRenderer>();
 builder.Services.AddScoped<VpsRuntimeService>();
 builder.Services.AddScoped<TunnelService>();
 builder.Services.AddHostedService<IdleShutdownService>();
+builder.Services.AddHostedService<ObservabilityRetentionService>();
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
@@ -32,8 +38,8 @@ var app = builder.Build();
 Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "data"));
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    await db.Database.EnsureCreatedAsync();
+    var initializer = scope.ServiceProvider.GetRequiredService<DatabaseSchemaInitializer>();
+    await initializer.InitializeAsync(CancellationToken.None);
 }
 
 if (app.Environment.IsDevelopment())
@@ -41,10 +47,15 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+app.UseMiddleware<CorrelationMiddleware>();
+app.UseMiddleware<ApiExceptionMiddleware>();
+app.UseMiddleware<RequestLoggingMiddleware>();
 app.UseCors();
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok", at = DateTimeOffset.UtcNow }));
+app.MapGet("/api/health", (ICorrelationContext correlation) =>
+    Results.Ok(new { status = "ok", at = DateTimeOffset.UtcNow, correlationId = correlation.CorrelationId }));
 app.MapNodeEndpoints();
 app.MapSessionEndpoints();
+app.MapObservabilityEndpoints();
 
 app.Run();
 

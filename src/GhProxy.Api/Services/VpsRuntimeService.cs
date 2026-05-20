@@ -7,12 +7,20 @@ public sealed class VpsRuntimeService(
     ICommandRunner commandRunner,
     NodeConfigRenderer configRenderer,
     AuditService audit,
+    IOperationalEventSink events,
     IOptions<ProxyRuntimeOptions> options)
 {
     private readonly ProxyRuntimeOptions _options = options.Value;
 
     public async Task<RuntimeResult> BootstrapAsync(VpsNode node, CancellationToken cancellationToken)
     {
+        await events.WriteAsync(new OperationalEventWrite(
+            "node.bootstrap.start",
+            OperationalEventSeverity.Information,
+            "Starting node bootstrap.",
+            NodeId: node.Id),
+            cancellationToken);
+
         var tempDirectory = Path.Combine(Path.GetTempPath(), "gh-proxy", node.Id.ToString("N"));
         Directory.CreateDirectory(tempDirectory);
 
@@ -21,15 +29,29 @@ public sealed class VpsRuntimeService(
         await File.WriteAllTextAsync(composePath, configRenderer.RenderCompose(node), cancellationToken);
         await File.WriteAllTextAsync(configPath, configRenderer.RenderProxyConfig(node), cancellationToken);
 
-        var mkdir = await commandRunner.RunAsync(Ssh(node, $"mkdir -p {_options.RemoteDirectory}"), cancellationToken);
+        var mkdir = await commandRunner.RunAsync(Ssh(node, $"mkdir -p {_options.RemoteDirectory}", "ssh.mkdir"), cancellationToken);
         if (!mkdir.Succeeded)
         {
+            await events.WriteAsync(new OperationalEventWrite(
+                "node.bootstrap.failure",
+                OperationalEventSeverity.Error,
+                "Failed to create remote directory.",
+                NodeId: node.Id,
+                StandardError: mkdir.StandardError),
+                cancellationToken);
             return RuntimeResult.Fail(mkdir.StandardError);
         }
 
         var copy = await commandRunner.RunAsync(Scp(node, composePath, configPath), cancellationToken);
         if (!copy.Succeeded)
         {
+            await events.WriteAsync(new OperationalEventWrite(
+                "node.bootstrap.failure",
+                OperationalEventSeverity.Error,
+                "Failed to copy proxy configuration.",
+                NodeId: node.Id,
+                StandardError: copy.StandardError),
+                cancellationToken);
             return RuntimeResult.Fail(copy.StandardError);
         }
 
@@ -37,6 +59,12 @@ public sealed class VpsRuntimeService(
         if (start.Succeeded)
         {
             await audit.WriteAsync("node.bootstrap", "Bootstrapped and started proxy service.", node.Id, cancellationToken);
+            await events.WriteAsync(new OperationalEventWrite(
+                "node.bootstrap.success",
+                OperationalEventSeverity.Information,
+                "Bootstrapped and started proxy service.",
+                NodeId: node.Id),
+                cancellationToken);
         }
 
         return start;
@@ -44,30 +72,59 @@ public sealed class VpsRuntimeService(
 
     public async Task<RuntimeResult> StartRemoteAsync(VpsNode node, CancellationToken cancellationToken)
     {
-        var result = await commandRunner.RunAsync(Ssh(node, $"cd {_options.RemoteDirectory} && docker compose up -d"), cancellationToken);
+        var result = await commandRunner.RunAsync(Ssh(node, $"cd {_options.RemoteDirectory} && docker compose up -d", "docker.compose.up"), cancellationToken);
+        await events.WriteAsync(new OperationalEventWrite(
+            result.Succeeded ? "node.remote.start.success" : "node.remote.start.failure",
+            result.Succeeded ? OperationalEventSeverity.Information : OperationalEventSeverity.Error,
+            result.Succeeded ? "Remote proxy started." : "Remote proxy start failed.",
+            NodeId: node.Id,
+            StandardError: result.StandardError),
+            cancellationToken);
         return result.Succeeded ? RuntimeResult.Ok("Remote proxy started.") : RuntimeResult.Fail(result.StandardError);
     }
 
     public async Task<RuntimeResult> StopRemoteAsync(VpsNode node, CancellationToken cancellationToken)
     {
-        var result = await commandRunner.RunAsync(Ssh(node, $"cd {_options.RemoteDirectory} && docker compose down"), cancellationToken);
+        var result = await commandRunner.RunAsync(Ssh(node, $"cd {_options.RemoteDirectory} && docker compose down", "docker.compose.down"), cancellationToken);
+        await events.WriteAsync(new OperationalEventWrite(
+            result.Succeeded ? "node.remote.stop.success" : "node.remote.stop.failure",
+            result.Succeeded ? OperationalEventSeverity.Information : OperationalEventSeverity.Error,
+            result.Succeeded ? "Remote proxy stopped." : "Remote proxy stop failed.",
+            NodeId: node.Id,
+            StandardError: result.StandardError),
+            cancellationToken);
         return result.Succeeded ? RuntimeResult.Ok("Remote proxy stopped.") : RuntimeResult.Fail(result.StandardError);
     }
 
     public async Task<RuntimeResult> ProbeStatusAsync(VpsNode node, CancellationToken cancellationToken)
     {
-        var result = await commandRunner.RunAsync(Ssh(node, $"cd {_options.RemoteDirectory} && docker compose ps --status running --services"), cancellationToken);
+        var result = await commandRunner.RunAsync(Ssh(node, $"cd {_options.RemoteDirectory} && docker compose ps --status running --services", "docker.compose.ps"), cancellationToken);
         if (!result.Succeeded)
         {
+            await events.WriteAsync(new OperationalEventWrite(
+                "node.status.failure",
+                OperationalEventSeverity.Error,
+                "Failed to probe remote proxy status.",
+                NodeId: node.Id,
+                StandardError: result.StandardError),
+                cancellationToken);
             return RuntimeResult.Fail(result.StandardError);
         }
 
-        return result.StandardOutput.Contains("gh-proxy", StringComparison.Ordinal)
+        var running = result.StandardOutput.Contains("gh-proxy", StringComparison.Ordinal);
+        await events.WriteAsync(new OperationalEventWrite(
+            running ? "node.status.running" : "node.status.stopped",
+            running ? OperationalEventSeverity.Information : OperationalEventSeverity.Warning,
+            running ? "Remote proxy is running." : "Remote proxy is not running.",
+            NodeId: node.Id,
+            StandardOutput: result.StandardOutput),
+            cancellationToken);
+        return running
             ? RuntimeResult.Ok("Remote proxy is running.")
             : RuntimeResult.Fail("Remote proxy is not running.");
     }
 
-    public CommandSpec TunnelCommand(VpsNode node)
+    public CommandSpec TunnelCommand(VpsNode node, Guid? sessionId = null)
     {
         return new CommandSpec("autossh",
             [
@@ -81,10 +138,13 @@ public sealed class VpsRuntimeService(
                 "-i", ExpandHome(node.SshKeyPath),
                 "-p", node.SshPort.ToString(),
                 $"{node.SshUsername}@{node.Host}"
-            ]);
+            ],
+            Kind: "autossh.tunnel",
+            NodeId: node.Id,
+            SessionId: sessionId);
     }
 
-    private static CommandSpec Ssh(VpsNode node, string remoteCommand)
+    private static CommandSpec Ssh(VpsNode node, string remoteCommand, string kind)
     {
         return new CommandSpec("ssh",
             [
@@ -95,7 +155,9 @@ public sealed class VpsRuntimeService(
                 $"{node.SshUsername}@{node.Host}",
                 remoteCommand
             ],
-            TimeSpan.FromSeconds(60));
+            TimeSpan.FromSeconds(60),
+            kind,
+            node.Id);
     }
 
     private CommandSpec Scp(VpsNode node, string composePath, string configPath)
@@ -110,7 +172,9 @@ public sealed class VpsRuntimeService(
                 configPath,
                 $"{node.SshUsername}@{node.Host}:{_options.RemoteDirectory}/"
             ],
-            TimeSpan.FromSeconds(60));
+            TimeSpan.FromSeconds(60),
+            "scp.config",
+            node.Id);
     }
 
     private static string ExpandHome(string path)

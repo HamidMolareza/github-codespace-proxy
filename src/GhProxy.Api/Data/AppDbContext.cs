@@ -8,6 +8,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<VpsNode> VpsNodes => Set<VpsNode>();
     public DbSet<ProxySession> ProxySessions => Set<ProxySession>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<OperationalEvent> OperationalEvents => Set<OperationalEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -42,6 +43,23 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.EventType).HasMaxLength(80).IsRequired();
             entity.Property(x => x.Message).HasMaxLength(2000).IsRequired();
             entity.HasIndex(x => x.Timestamp);
+        });
+
+        modelBuilder.Entity<OperationalEvent>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Severity).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.EventType).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.Message).HasMaxLength(4000).IsRequired();
+            entity.Property(x => x.CorrelationId).HasMaxLength(120);
+            entity.Property(x => x.CommandKind).HasMaxLength(120);
+            entity.Property(x => x.CommandDisplay).HasMaxLength(4000);
+            entity.Property(x => x.StandardOutputSnippet).HasMaxLength(8000);
+            entity.Property(x => x.StandardErrorSnippet).HasMaxLength(8000);
+            entity.Property(x => x.DetailsJson).HasMaxLength(8000);
+            entity.HasIndex(x => x.Timestamp);
+            entity.HasIndex(x => x.CorrelationId);
+            entity.HasIndex(x => x.NodeId);
         });
     }
 }

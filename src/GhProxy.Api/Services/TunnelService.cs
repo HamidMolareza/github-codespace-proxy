@@ -4,7 +4,13 @@ using Microsoft.EntityFrameworkCore;
 
 namespace GhProxy.Api.Services;
 
-public sealed class TunnelService(AppDbContext db, VpsRuntimeService runtime, ICommandRunner commandRunner, AuditService audit, IClock clock)
+public sealed class TunnelService(
+    AppDbContext db,
+    VpsRuntimeService runtime,
+    ICommandRunner commandRunner,
+    AuditService audit,
+    IClock clock,
+    IOperationalEventSink events)
 {
     public async Task<ProxySession> StartAsync(Guid nodeId, CancellationToken cancellationToken)
     {
@@ -17,6 +23,13 @@ public sealed class TunnelService(AppDbContext db, VpsRuntimeService runtime, IC
             .FirstOrDefaultAsync(cancellationToken);
         if (activeSession is not null)
         {
+            await events.WriteAsync(new OperationalEventWrite(
+                "session.start.reused",
+                OperationalEventSeverity.Warning,
+                "An active proxy session already exists.",
+                NodeId: activeSession.NodeId,
+                SessionId: activeSession.Id),
+                cancellationToken);
             return activeSession;
         }
 
@@ -32,6 +45,13 @@ public sealed class TunnelService(AppDbContext db, VpsRuntimeService runtime, IC
         };
         db.ProxySessions.Add(session);
         await db.SaveChangesAsync(cancellationToken);
+        await events.WriteAsync(new OperationalEventWrite(
+            "session.start.requested",
+            OperationalEventSeverity.Information,
+            "Proxy session start requested.",
+            NodeId: node.Id,
+            SessionId: session.Id),
+            cancellationToken);
 
         var remoteStart = await runtime.StartRemoteAsync(node, cancellationToken);
         if (!remoteStart.Succeeded)
@@ -40,15 +60,30 @@ public sealed class TunnelService(AppDbContext db, VpsRuntimeService runtime, IC
             session.LastError = remoteStart.Message;
             node.Status = VpsNodeStatus.Error;
             await db.SaveChangesAsync(cancellationToken);
+            await events.WriteAsync(new OperationalEventWrite(
+                "session.start.failure",
+                OperationalEventSeverity.Error,
+                remoteStart.Message,
+                NodeId: node.Id,
+                SessionId: session.Id),
+                cancellationToken);
             return session;
         }
 
-        var process = commandRunner.Start(runtime.TunnelCommand(node));
+        var process = commandRunner.Start(runtime.TunnelCommand(node, session.Id));
         session.TunnelProcessId = process.Id;
         session.Status = ProxySessionStatus.Running;
         node.Status = VpsNodeStatus.Running;
         await db.SaveChangesAsync(cancellationToken);
         await audit.WriteAsync("session.start", $"Started tunnel on 127.0.0.1:{node.LocalPort}.", node.Id, cancellationToken);
+        await events.WriteAsync(new OperationalEventWrite(
+            "session.start.success",
+            OperationalEventSeverity.Information,
+            $"Started tunnel on 127.0.0.1:{node.LocalPort}.",
+            NodeId: node.Id,
+            SessionId: session.Id,
+            Details: new { process.Id, node.LocalPort, node.RemoteHttpPort }),
+            cancellationToken);
         return session;
     }
 
@@ -62,6 +97,11 @@ public sealed class TunnelService(AppDbContext db, VpsRuntimeService runtime, IC
 
         if (session is null)
         {
+            await events.WriteAsync(new OperationalEventWrite(
+                "session.stop.none",
+                OperationalEventSeverity.Warning,
+                "Stop requested but no active proxy session was found."),
+                cancellationToken);
             return null;
         }
 
@@ -73,10 +113,25 @@ public sealed class TunnelService(AppDbContext db, VpsRuntimeService runtime, IC
     {
         session.Status = ProxySessionStatus.Stopping;
         await db.SaveChangesAsync(cancellationToken);
+        await events.WriteAsync(new OperationalEventWrite(
+            "session.stop.requested",
+            OperationalEventSeverity.Information,
+            reason,
+            NodeId: session.NodeId,
+            SessionId: session.Id),
+            cancellationToken);
 
         if (session.TunnelProcessId is int pid)
         {
-            TryKill(pid);
+            var killed = TryKill(pid);
+            await events.WriteAsync(new OperationalEventWrite(
+                killed ? "session.tunnel.kill" : "session.tunnel.kill.skipped",
+                killed ? OperationalEventSeverity.Information : OperationalEventSeverity.Warning,
+                killed ? "Killed local tunnel process." : "Local tunnel process was already gone.",
+                NodeId: session.NodeId,
+                SessionId: session.Id,
+                Details: new { pid }),
+                cancellationToken);
         }
 
         if (session.Node is not null)
@@ -93,6 +148,13 @@ public sealed class TunnelService(AppDbContext db, VpsRuntimeService runtime, IC
         session.StoppedAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
         await audit.WriteAsync("session.stop", reason, session.NodeId, cancellationToken);
+        await events.WriteAsync(new OperationalEventWrite(
+            "session.stop.completed",
+            OperationalEventSeverity.Information,
+            reason,
+            NodeId: session.NodeId,
+            SessionId: session.Id),
+            cancellationToken);
     }
 
     public async Task<ProxySession?> GetActiveAsync(CancellationToken cancellationToken)
@@ -108,18 +170,27 @@ public sealed class TunnelService(AppDbContext db, VpsRuntimeService runtime, IC
     {
         session.LastActivityAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
+        await events.WriteAsync(new OperationalEventWrite(
+            "session.activity",
+            OperationalEventSeverity.Debug,
+            "Detected active local tunnel connection.",
+            NodeId: session.NodeId,
+            SessionId: session.Id),
+            cancellationToken);
     }
 
-    private static void TryKill(int pid)
+    private static bool TryKill(int pid)
     {
         try
         {
             using var process = System.Diagnostics.Process.GetProcessById(pid);
             process.Kill(entireProcessTree: true);
+            return true;
         }
         catch
         {
             // The tunnel may already have exited.
+            return false;
         }
     }
 }
