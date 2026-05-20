@@ -127,6 +127,12 @@ public static class GitHubEndpoints
             return Results.Ok(snapshots);
         });
 
+        accounts.MapGet("/{id:guid}/codespaces/{name}", async (Guid id, string name, GitHubCodespaceService service, CancellationToken ct) =>
+        {
+            var snapshot = await service.RefreshCodespaceAsync(id, name, ct);
+            return snapshot is null ? Results.NotFound() : Results.Ok(ToResponse(snapshot));
+        });
+
         accounts.MapPost("/{id:guid}/codespaces", async (Guid id, CreateCodespaceRequest request, GitHubCodespaceService service, CancellationToken ct) =>
             Results.Ok(new GitHubLifecycleResultResponse(true, "Codespace create request submitted.", ToResponse(await service.CreateAsync(id, request, ct)))));
 

@@ -12,6 +12,7 @@ public enum GitHubAccountQuotaState
 {
     Unknown,
     Healthy,
+    Warning,
     Limited,
     Unavailable
 }

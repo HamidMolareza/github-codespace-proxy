@@ -1,26 +1,25 @@
-# Local Proxy Manager Plan
+# Safe Multi-Account Codespaces Manager Plan
 
 ## Summary
 
-Pivot the active app workflow to a local-only proxy manager. The main UI creates local proxy profiles, starts an HTTP proxy listener on the backend host, supports HTTPS `CONNECT`, shows a ready endpoint, and records observable start/stop/probe/request events.
+The active app workflow manages multiple GitHub username/PAT records and normal Codespaces lifecycle. The UI has separate tabs for Codespaces, Local Proxy, and Activity. Codespaces are not used as proxy infrastructure.
 
 ## Milestones
 
-1. Add local proxy profile and session persistence.
-2. Add local proxy API endpoints for CRUD, start, stop, active session, and probe.
-3. Implement an in-process HTTP proxy with HTTPS `CONNECT`.
-4. Add idle shutdown for inactive local proxy sessions.
-5. Replace the active frontend with a local proxy dashboard.
-6. Publish the proxy port through Docker Compose on host localhost.
-7. Add backend tests and update run/operations docs.
+1. Keep GitHub account and Codespace snapshot persistence.
+2. Restore the Codespaces UI for account CRUD, validation, usage, sync, and lifecycle actions.
+3. Add row refresh and lifecycle polling so start/stop/create progress is visible.
+4. Keep local proxy as a separate local-only tool.
+5. Keep shared Activity and diagnostics for GitHub and local proxy events.
+6. Update Docker/local docs and validation commands.
+7. Add tests for Codespace row refresh and preserve local proxy tests.
 
 ## Acceptance Criteria
 
-- A user can add, edit, view, and delete local proxy profiles.
-- A user can click Start and receive a ready endpoint such as `http://127.0.0.1:8901`.
-- Plain HTTP proxy requests are forwarded.
-- HTTPS destinations work through `CONNECT`.
-- Optional proxy authentication rejects unauthenticated requests.
-- Stop closes the active listener.
-- Idle shutdown stops inactive sessions.
-- Activity shows start, stop, probe, auth, request, and idle events with redaction.
+- A user can add, edit, view, and delete GitHub account records.
+- A user can validate a PAT and sync Codespaces for that account.
+- A user can create, start, stop, export, delete, and refresh a Codespace.
+- Start/stop/create actions show progress and update final state.
+- Limited accounts disable create/start behavior through backend validation.
+- The Local Proxy tab continues to expose only a local proxy endpoint.
+- Activity shows GitHub and local proxy operational events with redaction.

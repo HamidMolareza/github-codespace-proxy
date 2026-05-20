@@ -18,6 +18,19 @@ npm run dev
 
 The frontend proxies `/api/*` to `http://127.0.0.1:5080`.
 
+## GitHub Codespaces Workflow
+
+1. Open `http://127.0.0.1:5173`.
+2. Add a GitHub username and PAT in the Codespaces tab.
+3. Click validate to confirm the PAT belongs to the expected GitHub account.
+4. Click sync to load Codespaces for that account.
+5. Use create/start/stop/export/delete/refresh from the Codespaces table.
+6. After Start, wait for the row status to become `Available`, then open the Codespace web URL or copy a normal `gh codespace ssh` command.
+
+PAT values are encrypted at rest and are not displayed after save.
+
+The app does not use Codespaces as a proxy backend, does not run `sp-proxy`, and does not rotate accounts to bypass quota.
+
 ## Local Proxy Workflow
 
 1. Open `http://127.0.0.1:5173`.
@@ -116,7 +129,7 @@ Secrets are redacted before command output, command display strings, details JSO
 
 ## GitHub Codespaces
 
-The backend still contains normal GitHub Codespaces management endpoints from earlier iterations. The local proxy workflow does not depend on GitHub and does not use Codespaces as a proxy backend.
+The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The local proxy workflow does not depend on GitHub and does not use Codespaces as a proxy backend.
 
 ## Git Commands In This Workspace
 

@@ -100,6 +100,12 @@ public sealed class GitHubCodespaceService(
         return usage;
     }
 
+    public async Task<CodespaceSnapshot?> RefreshCodespaceAsync(Guid accountId, string codespaceName, CancellationToken cancellationToken)
+    {
+        var snapshots = await SyncAsync(accountId, cancellationToken);
+        return snapshots.FirstOrDefault(x => string.Equals(x.Name, codespaceName, StringComparison.OrdinalIgnoreCase));
+    }
+
     public async Task<CodespaceSnapshot> CreateAsync(Guid accountId, CreateCodespaceRequest request, CancellationToken cancellationToken)
     {
         var account = await GetAccountAsync(accountId, cancellationToken);

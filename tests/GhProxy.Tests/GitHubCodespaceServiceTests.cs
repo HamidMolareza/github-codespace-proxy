@@ -106,6 +106,58 @@ public sealed class GitHubCodespaceServiceTests
         }
     }
 
+    [Fact]
+    public async Task RefreshCodespaceAsync_SyncsAndReturnsRequestedCodespace()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = new GitHubAccount
+            {
+                DisplayName = "Primary",
+                Username = "octocat",
+                ProtectedPersonalAccessToken = "token",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            db.GitHubAccounts.Add(account);
+            await db.SaveChangesAsync();
+            var github = new FakeGitHubApiClient
+            {
+                Codespaces =
+                [
+                    new GitHubCodespaceRemote(
+                        "fresh",
+                        "Available",
+                        "octocat/hello",
+                        "2-core",
+                        "UsEast",
+                        "https://github.com/codespaces/fresh",
+                        "octocat",
+                        DateTimeOffset.UtcNow.AddHours(-2),
+                        DateTimeOffset.UtcNow.AddHours(-1),
+                        DateTimeOffset.UtcNow.AddMinutes(-10))
+                ]
+            };
+            var service = CreateService(db, github);
+
+            var snapshot = await service.RefreshCodespaceAsync(account.Id, "fresh", CancellationToken.None);
+
+            Assert.NotNull(snapshot);
+            Assert.Equal("Available", snapshot.State);
+            Assert.Equal("octocat/hello", snapshot.RepositoryFullName);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
     private static GitHubCodespaceService CreateService(AppDbContext db, IGitHubApiClient github)
     {
         var clock = new TestClock();

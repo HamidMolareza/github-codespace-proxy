@@ -1,5 +1,5 @@
 export type GitHubAccountValidationStatus = 'Unknown' | 'Valid' | 'Invalid' | 'Error';
-export type GitHubAccountQuotaState = 'Unknown' | 'Healthy' | 'Limited' | 'Unavailable';
+export type GitHubAccountQuotaState = 'Unknown' | 'Healthy' | 'Warning' | 'Limited' | 'Unavailable';
 
 export interface GitHubAccount {
   id: string;

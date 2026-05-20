@@ -7,7 +7,8 @@
 - Database: SQLite through EF Core.
 - GitHub integration: direct `HttpClient` calls to official GitHub REST API endpoints.
 - Active control plane location: trusted local workstation or local Docker Compose stack.
-- Active proxy mode: in-process local HTTP proxy with HTTPS `CONNECT`.
+- Active product mode: multi-account GitHub Codespaces manager with a separate local-only proxy tool.
+- Local proxy mode: in-process local HTTP proxy with HTTPS `CONNECT`.
 
 ## Local Proxy Boundaries
 

@@ -90,6 +90,8 @@ export const api = {
     }),
   usage: (id: string) => request<GitHubUsage>(`/api/github/accounts/${id}/usage`),
   codespaces: (id: string) => request<CodespaceSnapshot[]>(`/api/github/accounts/${id}/codespaces`),
+  codespace: (id: string, name: string) =>
+    request<CodespaceSnapshot>(`/api/github/accounts/${id}/codespaces/${encodeURIComponent(name)}`),
   createCodespace: (id: string, form: CreateCodespaceForm) =>
     request<GitHubLifecycleResult>(`/api/github/accounts/${id}/codespaces`, {
       method: 'POST',
