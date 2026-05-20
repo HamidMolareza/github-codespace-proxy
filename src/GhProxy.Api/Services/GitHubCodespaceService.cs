@@ -1,3 +1,4 @@
+using System.Net;
 using GhProxy.Api.Contracts;
 using GhProxy.Api.Data;
 using GhProxy.Api.Domain;
@@ -164,7 +165,32 @@ public sealed class GitHubCodespaceService(
             throw new InvalidOperationException("This account is marked as limited. Starting Codespaces is blocked.");
         }
 
-        var remote = await action(secrets.Unprotect(account.ProtectedPersonalAccessToken), codespaceName, cancellationToken);
+        GitHubCodespaceRemote remote;
+        try
+        {
+            remote = await action(secrets.Unprotect(account.ProtectedPersonalAccessToken), codespaceName, cancellationToken);
+        }
+        catch (GitHubApiException ex) when (verb == "Started" && ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            await events.WriteAsync(new OperationalEventWrite(
+                "github.codespaces.start.conflict",
+                OperationalEventSeverity.Warning,
+                "GitHub reported a Codespace start conflict; refreshing current Codespace state.",
+                NodeId: account.Id,
+                StandardError: ex.Body,
+                Details: new { account.Username, CodespaceName = codespaceName, StatusCode = (int)ex.StatusCode }),
+                cancellationToken);
+            var refreshed = await SyncAsync(accountId, cancellationToken);
+            var current = refreshed.FirstOrDefault(x => string.Equals(x.Name, codespaceName, StringComparison.OrdinalIgnoreCase));
+            if (current is not null)
+            {
+                await audit.WriteAsync(eventType, $"Codespace {current.Name} start is already in progress.", account.Id, cancellationToken);
+                return current;
+            }
+
+            throw;
+        }
+
         var snapshot = await UpsertRemoteAsync(account, remote, cancellationToken);
         var synced = await SyncAsync(accountId, cancellationToken);
         snapshot = synced.FirstOrDefault(x => string.Equals(x.Name, snapshot.Name, StringComparison.OrdinalIgnoreCase)) ?? snapshot;

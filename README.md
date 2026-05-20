@@ -1,6 +1,6 @@
 # GitHub Codespaces Manager
 
-Local admin panel for managing multiple GitHub accounts and normal Codespaces lifecycle, with a separate Xray-backed local proxy tool.
+Local admin panel for managing multiple GitHub accounts and running a GitHub Codespace-backed Xray proxy.
 
 The application stores GitHub username/PAT records with ASP.NET Core Data Protection, validates tokens, syncs Codespaces, shows usage where GitHub exposes it, and provides create/start/stop/export/delete actions through official GitHub REST APIs.
 
@@ -13,10 +13,10 @@ The application stores GitHub username/PAT records with ASP.NET Core Data Protec
 - Create, start, stop, export, delete, and row-refresh Codespaces.
 - Show usage from GitHub billing APIs when the token/account can access it.
 - Block create/start when an account is marked `Limited`.
-- Provide a separate local Xray proxy with HTTP on `127.0.0.1:8901` and SOCKS5 on `127.0.0.1:8902`.
+- Run a Codespace-backed Xray proxy on one local mixed port, with HTTP and SOCKS5 both available on `127.0.0.1:8901`.
 - Inspect operational activity, diagnostics, and correlation IDs.
 
-The app does not use GitHub Codespaces as a proxy backend, does not run `sp-proxy`, and does not rotate GitHub accounts to bypass quota.
+The app reproduces the stable `sp-proxy` shape with native `gh` and `autossh`: it starts/resumes the selected Codespace, verifies the remote proxy on `127.0.0.1:8899`, opens a hidden local SSH tunnel, and routes Xray through that tunnel. It does not rotate GitHub accounts to bypass quota.
 
 ## Run Locally
 
@@ -48,10 +48,9 @@ Published ports:
 
 - Frontend: `127.0.0.1:5173`
 - Backend API: `127.0.0.1:5080`
-- Local HTTP proxy: `127.0.0.1:8901`
-- Local SOCKS proxy: `127.0.0.1:8902`
+- Codespace proxy: `127.0.0.1:8901` for both HTTP and SOCKS5
 
-In Docker mode, the backend starts Xray as a managed child process and binds its listeners to `0.0.0.0` inside the container, while Compose publishes them only to host localhost.
+Codespace tunnel orchestration is intended for host-local runs where `gh`, `autossh`, `ssh`, `nc`, and the user's SSH home directory are available. Docker Compose is useful for the control plane, but host-local execution is the supported mode for Codespace tunneling.
 
 Check the stack:
 
@@ -86,4 +85,4 @@ The API writes structured operational events to SQLite and, by default, JSONL fi
 - `GET /api/activity/summary`
 - `GET /api/diagnostics/runtime`
 
-Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. GitHub API paths/statuses, local Xray proxy events, failures, and bounded snippets are recorded with secret redaction.
+Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. GitHub API paths/statuses, Codespace tunnel events, Xray proxy events, failures, and bounded snippets are recorded with secret redaction.

@@ -20,7 +20,7 @@ public static class LocalProxyEndpoints
 
         group.MapPost("/profiles", async (LocalProxyProfileRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
         {
-            var socksPort = request.SocksPort ?? 8902;
+            var socksPort = request.SocksPort ?? request.LocalPort;
             var validation = await ValidateAsync(request, socksPort, db, null, requirePasswordForNewAuth: true, ct);
             if (validation is not null)
             {
@@ -64,7 +64,7 @@ public static class LocalProxyEndpoints
 
             var wantsAuth = !string.IsNullOrWhiteSpace(request.ProxyUsername);
             var hasExistingPassword = !string.IsNullOrWhiteSpace(profile.ProtectedProxyPassword);
-            var socksPort = request.SocksPort ?? profile.SocksPort;
+            var socksPort = request.SocksPort ?? request.LocalPort;
             var validation = await ValidateAsync(request, socksPort, db, id, requirePasswordForNewAuth: wantsAuth && !hasExistingPassword, ct);
             if (validation is not null)
             {
@@ -161,7 +161,7 @@ public static class LocalProxyEndpoints
             profile.CreatedAt,
             profile.UpdatedAt);
 
-    private static LocalProxySessionResponse? ToResponse(LocalProxyRuntimeState? state) =>
+    public static LocalProxySessionResponse? ToResponse(LocalProxyRuntimeState? state) =>
         state is null
             ? null
             : new LocalProxySessionResponse(
@@ -193,23 +193,17 @@ public static class LocalProxyEndpoints
         AddRequired(errors, nameof(request.BindHost), request.BindHost);
         AddPort(errors, nameof(request.LocalPort), request.LocalPort);
         AddPort(errors, nameof(request.SocksPort), socksPort);
-        if (request.LocalPort == socksPort)
-        {
-            errors[nameof(request.SocksPort)] = ["SOCKS port must be different from HTTP port."];
-        }
 
         var portOwner = await db.LocalProxyProfiles
             .AsNoTracking()
             .Where(x => existingProfileId == null || x.Id != existingProfileId)
             .Where(x => x.LocalPort == request.LocalPort ||
-                        x.SocksPort == request.LocalPort ||
-                        x.LocalPort == socksPort ||
-                        x.SocksPort == socksPort)
+                        x.SocksPort == request.LocalPort)
             .Select(x => x.Name)
             .FirstOrDefaultAsync(ct);
         if (portOwner is not null)
         {
-            errors[nameof(request.LocalPort)] = [$"HTTP/SOCKS port overlaps with profile \"{portOwner}\"."];
+            errors[nameof(request.LocalPort)] = [$"Proxy port overlaps with profile \"{portOwner}\"."];
         }
 
         if (request.IdleShutdownMinutes is < 1 or > 1440)

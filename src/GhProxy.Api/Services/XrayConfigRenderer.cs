@@ -59,14 +59,7 @@ public sealed class XrayConfigRenderer
                     ["settings"] = socksSettings
                 }
             },
-            ["outbounds"] = new object[]
-            {
-                new Dictionary<string, object?>
-                {
-                    ["tag"] = "direct",
-                    ["protocol"] = "freedom"
-                }
-            },
+            ["outbounds"] = new object[] { BuildOutbound(request) },
             ["routing"] = new Dictionary<string, object?>
             {
                 ["rules"] = new object[]
@@ -75,13 +68,43 @@ public sealed class XrayConfigRenderer
                     {
                         ["type"] = "field",
                         ["inboundTag"] = new[] { "local-http", "local-socks" },
-                        ["outboundTag"] = "direct"
+                        ["outboundTag"] = request.UpstreamProxy is null ? "direct" : "codespace-proxy"
                     }
                 }
             }
         };
 
         return JsonSerializer.Serialize(config, JsonOptions);
+    }
+
+    private static Dictionary<string, object?> BuildOutbound(XrayConfigRequest request)
+    {
+        if (request.UpstreamProxy is null)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["tag"] = "direct",
+                ["protocol"] = "freedom"
+            };
+        }
+
+        var upstream = request.UpstreamProxy;
+        return new Dictionary<string, object?>
+        {
+            ["tag"] = "codespace-proxy",
+            ["protocol"] = upstream.Protocol,
+            ["settings"] = new Dictionary<string, object?>
+            {
+                ["servers"] = new object[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["address"] = upstream.Host,
+                        ["port"] = upstream.Port
+                    }
+                }
+            }
+        };
     }
 }
 
@@ -92,7 +115,10 @@ public sealed record XrayConfigRequest(
     string AccessLogPath,
     string ErrorLogPath,
     string? ProxyUsername,
-    string? ProxyPassword)
+    string? ProxyPassword,
+    XrayOutboundProxy? UpstreamProxy = null)
 {
     public bool RequiresAuthentication => !string.IsNullOrWhiteSpace(ProxyUsername) && !string.IsNullOrWhiteSpace(ProxyPassword);
 }
+
+public sealed record XrayOutboundProxy(string Protocol, string Host, int Port);

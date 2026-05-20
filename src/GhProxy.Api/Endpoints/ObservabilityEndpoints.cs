@@ -104,7 +104,11 @@ public static class ObservabilityEndpoints
             {
                 new("GitHub API", Uri.TryCreate(githubOptions.Value.ApiBaseUrl, UriKind.Absolute, out _), githubOptions.Value.ApiBaseUrl),
                 new("Data Protection", Directory.Exists(Path.Combine(environment.ContentRootPath, "data", "keys")), "Keys are persisted under the app data directory."),
-                new("Xray", ResolveExecutable(localProxyOptions.Value.XrayExecutablePath) is not null, localProxyOptions.Value.XrayExecutablePath)
+                new("Xray", ResolveExecutable(localProxyOptions.Value.XrayExecutablePath) is not null, localProxyOptions.Value.XrayExecutablePath),
+                new("GitHub CLI", ResolveExecutable("gh") is not null, "gh"),
+                new("autossh", ResolveExecutable("autossh") is not null, "autossh"),
+                new("ssh", ResolveExecutable("ssh") is not null, "ssh"),
+                new("nc", ResolveExecutable("nc") is not null, "nc")
             };
 
             return Results.Ok(new RuntimeDiagnosticsResponse(databaseAvailable, tools));

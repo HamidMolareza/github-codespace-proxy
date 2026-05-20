@@ -8,7 +8,8 @@ public sealed record CommandSpec(
     TimeSpan? Timeout = null,
     string? Kind = null,
     Guid? NodeId = null,
-    Guid? SessionId = null)
+    Guid? SessionId = null,
+    IReadOnlyDictionary<string, string?>? EnvironmentVariables = null)
 {
     public string RedactedDisplay => string.Join(" ", new[] { FileName }.Concat(Arguments.Select(Redact)));
     public string CommandKind => Kind ?? FileName;
@@ -140,6 +141,21 @@ public sealed class ProcessCommandRunner(ILogger<ProcessCommandRunner> logger, I
         foreach (var arg in command.Arguments)
         {
             startInfo.ArgumentList.Add(arg);
+        }
+
+        if (command.EnvironmentVariables is not null)
+        {
+            foreach (var (key, value) in command.EnvironmentVariables)
+            {
+                if (value is null)
+                {
+                    startInfo.Environment.Remove(key);
+                }
+                else
+                {
+                    startInfo.Environment[key] = value;
+                }
+            }
         }
 
         return new Process { StartInfo = startInfo };

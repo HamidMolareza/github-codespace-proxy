@@ -106,6 +106,11 @@ export const api = {
     request<GitHubLifecycleResult>(`/api/github/accounts/${accountId}/codespaces/${encodeURIComponent(name)}/start`, {
       method: 'POST'
     }),
+  startCodespaceProxy: (accountId: string, name: string, profileId?: string | null) =>
+    request<LocalProxyResult>(`/api/github/accounts/${accountId}/codespaces/${encodeURIComponent(name)}/proxy/start`, {
+      method: 'POST',
+      body: JSON.stringify({ profileId: profileId ?? null })
+    }),
   stopCodespace: (accountId: string, name: string) =>
     request<GitHubLifecycleResult>(`/api/github/accounts/${accountId}/codespaces/${encodeURIComponent(name)}/stop`, {
       method: 'POST'

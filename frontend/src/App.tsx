@@ -62,7 +62,7 @@ const emptyProfileForm: LocalProxyProfileForm = {
   name: '',
   bindHost: '127.0.0.1',
   localPort: 8901,
-  socksPort: 8902,
+  socksPort: 8901,
   proxyUsername: '',
   proxyPassword: '',
   idleShutdownMinutes: 30,
@@ -229,11 +229,18 @@ export default function App() {
   }
 
   async function startCodespace(accountId: string, name: string) {
-    await runAction('start-codespace', async () => {
-      const result = await api.startCodespace(accountId, name);
-      await pollCodespace(accountId, name, isAvailableState, 'Starting');
-      return result;
-    });
+    const key = progressKey(accountId, name);
+    setCodespaceProgress((current) => ({ ...current, [key]: 'Starting proxy' }));
+    try {
+      await runAction('start-codespace-proxy', async () => {
+        const result = await api.startCodespaceProxy(accountId, name, selectedProfile?.id ?? null);
+        await loadLocalProxy();
+        await loadCodespaces(accountId);
+        return result;
+      });
+    } finally {
+      setCodespaceProgress((current) => clearProgress(current, key));
+    }
   }
 
   async function stopCodespace(accountId: string, name: string) {
@@ -317,7 +324,13 @@ export default function App() {
   }
 
   function updateProfileField<K extends keyof LocalProxyProfileForm>(field: K, value: LocalProxyProfileForm[K]) {
-    setProfileForm((current) => ({ ...current, [field]: value }));
+    setProfileForm((current) => {
+      const next = { ...current, [field]: value };
+      if (field === 'localPort') {
+        next.socksPort = value as number;
+      }
+      return next;
+    });
   }
 
   function updateActivityFilter<K extends keyof ActivityFilters>(field: K, value: ActivityFilters[K]) {
@@ -334,7 +347,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>GitHub Codespaces Manager</h1>
-          <p>Manage GitHub accounts and Codespaces; local proxy is separate</p>
+          <p>Run a GitHub Codespace-backed proxy with one HTTP/SOCKS port</p>
         </div>
         <button className="icon-button" onClick={() => runAction('refresh', loadAll)} disabled={busy !== null} title="Refresh">
           <RefreshCw size={18} />
@@ -361,7 +374,7 @@ export default function App() {
         </button>
         <button className={activeTab === 'local-proxy' ? 'active-tab' : ''} onClick={() => setActiveTab('local-proxy')}>
           <Wifi size={16} />
-          Local Proxy
+          Codespace Proxy
         </button>
         <button className={activeTab === 'activity' ? 'active-tab' : ''} onClick={() => setActiveTab('activity')}>
           <Activity size={16} />
@@ -412,7 +425,6 @@ export default function App() {
           onEditProfile={editProfile}
           onProbe={() => runAction('probe-local-proxy', () => api.probeLocalProxy())}
           onSaveProfile={saveProfile}
-          onStart={(id) => runAction('start-local-proxy', () => api.startLocalProxy(id))}
           onStop={() => runAction('stop-local-proxy', () => api.stopLocalProxy())}
           onUpdateField={updateProfileField}
         />
@@ -687,7 +699,7 @@ function CodespaceTable({ busy, codespaceProgress, codespaces, selectedAccountId
             <span>{codespace.machineDisplayName ?? codespace.location ?? ''}</span>
             <span>{codespace.lastUsedAt ? formatDate(codespace.lastUsedAt) : ''}</span>
             <span className="row-actions">
-              <button title="Start" onClick={() => onStart(selectedAccountId, codespace.name)} disabled={busy !== null}>
+              <button title="Run Codespace proxy" onClick={() => onStart(selectedAccountId, codespace.name)} disabled={busy !== null}>
                 <Play size={16} />
               </button>
               <button title="Stop" onClick={() => onStop(selectedAccountId, codespace.name)} disabled={busy !== null}>
@@ -725,7 +737,6 @@ interface LocalProxyPanelProps {
   onEditProfile: (profile: LocalProxyProfile) => void;
   onProbe: () => void;
   onSaveProfile: (event: FormEvent) => Promise<void>;
-  onStart: (id: string) => void;
   onStop: () => void;
   onUpdateField: <K extends keyof LocalProxyProfileForm>(field: K, value: LocalProxyProfileForm[K]) => void;
 }
@@ -742,7 +753,6 @@ function LocalProxyPanel({
   onEditProfile,
   onProbe,
   onSaveProfile,
-  onStart,
   onStop,
   onUpdateField
 }: LocalProxyPanelProps) {
@@ -763,12 +773,9 @@ function LocalProxyPanel({
     <>
       <section className="active-strip">
         <span className={`badge ${badgeClass(session?.status ?? 'Stopped')}`}>{session?.status ?? 'Stopped'}</span>
-        <strong>{session ? session.profileName : 'No active local proxy session'}</strong>
+        <strong>{session ? session.profileName : 'No active Codespace proxy session'}</strong>
         {session && <span>{session.activeConnections} active / {session.totalRequests} requests</span>}
         <div className="active-actions">
-          <button title="Start selected profile" onClick={() => { if (selectedProfile) onStart(selectedProfile.id); }} disabled={busy !== null || !selectedProfile || session?.status === 'Running'}>
-            <Play size={17} />
-          </button>
           <button title="Stop active proxy" onClick={onStop} disabled={busy !== null || !session}>
             <Square size={17} />
           </button>
@@ -795,12 +802,8 @@ function LocalProxyPanel({
                 <input value={form.bindHost} onChange={(event) => onUpdateField('bindHost', event.target.value)} required />
               </label>
               <label>
-                HTTP port
+                Proxy port
                 <input type="number" min="1" max="65535" value={form.localPort} onChange={(event) => onUpdateField('localPort', Number(event.target.value))} required />
-              </label>
-              <label>
-                SOCKS port
-                <input type="number" min="1" max="65535" value={form.socksPort} onChange={(event) => onUpdateField('socksPort', Number(event.target.value))} required />
               </label>
               <label>
                 Idle minutes
@@ -829,7 +832,7 @@ function LocalProxyPanel({
             <section className="editor">
               <div className="section-title">
                 <Copy size={20} />
-                <h2>Use Local Proxy</h2>
+                <h2>Use Codespace Proxy</h2>
               </div>
               <div className="proxy-copy-row">
                 <code>{session.httpProxyUrl}</code>
@@ -854,15 +857,15 @@ function LocalProxyPanel({
         <section className="node-list">
           <div className="section-title">
             <Wifi size={20} />
-            <h2>Local Proxy Profiles</h2>
+            <h2>Codespace Proxy Profiles</h2>
           </div>
-          {profiles.length === 0 && <div className="empty-state">No local proxy profiles yet.</div>}
+          {profiles.length === 0 && <div className="empty-state">No Codespace proxy profiles yet. Running a Codespace can create the default profile.</div>}
           {profiles.map((profile) => (
             <article className={`node-card ${profile.id === selectedProfile?.id ? 'selected-row' : ''}`} key={profile.id}>
               <div className="node-main">
                 <div>
                   <h3>{profile.name}</h3>
-                  <p>HTTP {profile.bindHost}:{profile.localPort} / SOCKS {profile.bindHost}:{profile.socksPort}</p>
+                  <p>HTTP and SOCKS {profile.bindHost}:{profile.localPort}</p>
                 </div>
                 <span className={`badge ${badgeClass(profile.status)}`}>{profile.status}</span>
               </div>
@@ -872,9 +875,6 @@ function LocalProxyPanel({
                 {profile.notes && <span>{profile.notes}</span>}
               </div>
               <div className="node-actions">
-                <button title="Start" onClick={() => onStart(profile.id)} disabled={busy !== null || session?.status === 'Running'}>
-                  <Play size={16} />
-                </button>
                 <button title="Edit" onClick={() => onEditProfile(profile)} disabled={busy !== null}>
                   <Pencil size={16} />
                 </button>

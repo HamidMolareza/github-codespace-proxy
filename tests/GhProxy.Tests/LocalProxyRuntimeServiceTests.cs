@@ -15,25 +15,28 @@ namespace GhProxy.Tests;
 public sealed class LocalProxyRuntimeServiceTests
 {
     [Fact]
-    public void XrayConfigRenderer_AddsHttpAndSocksInboundsWithDirectOutbound()
+    public void XrayConfigRenderer_AddsHttpAndSocksInboundsWithCodespaceOutbound()
     {
         var config = new XrayConfigRenderer().Render(new XrayConfigRequest(
             "127.0.0.1",
-            8901,
-            8902,
+            19001,
+            19002,
             "/tmp/access.log",
             "/tmp/error.log",
             "user",
-            "pass"));
+            "pass",
+            new XrayOutboundProxy("http", "127.0.0.1", 19099)));
 
         using var document = JsonDocument.Parse(config);
         var root = document.RootElement;
         var inbounds = root.GetProperty("inbounds").EnumerateArray().ToList();
-        Assert.Contains(inbounds, x => x.GetProperty("protocol").GetString() == "http" && x.GetProperty("port").GetInt32() == 8901);
+        Assert.Contains(inbounds, x => x.GetProperty("protocol").GetString() == "http" && x.GetProperty("port").GetInt32() == 19001);
         var socks = inbounds.Single(x => x.GetProperty("protocol").GetString() == "socks");
-        Assert.Equal(8902, socks.GetProperty("port").GetInt32());
+        Assert.Equal(19002, socks.GetProperty("port").GetInt32());
         Assert.Equal("password", socks.GetProperty("settings").GetProperty("auth").GetString());
-        Assert.Equal("freedom", root.GetProperty("outbounds")[0].GetProperty("protocol").GetString());
+        var outbound = root.GetProperty("outbounds")[0];
+        Assert.Equal("http", outbound.GetProperty("protocol").GetString());
+        Assert.Equal(19099, outbound.GetProperty("settings").GetProperty("servers")[0].GetProperty("port").GetInt32());
     }
 
     [Fact]
@@ -52,7 +55,7 @@ public sealed class LocalProxyRuntimeServiceTests
             var result = await runtime.StartAsync(profile.Id, CancellationToken.None);
 
             Assert.False(result.Succeeded);
-            Assert.Contains("HTTP port", result.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Proxy port", result.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -62,26 +65,23 @@ public sealed class LocalProxyRuntimeServiceTests
     }
 
     [Fact]
-    public async Task StartAsync_ReturnsFailureWhenSocksPortIsUnavailable()
+    public async Task StartAsync_AllowsHttpAndSocksToShareOnePublicPort()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
         await using var provider = CreateProvider(databasePath);
-        var occupiedPort = GetFreePort();
-        var listener = new TcpListener(IPAddress.Loopback, occupiedPort);
-        listener.Start();
         try
         {
-            var profile = await CreateProfileAsync(provider, localPort: GetFreePort(), socksPort: occupiedPort);
+            var port = GetFreePort();
+            var profile = await CreateProfileAsync(provider, localPort: port, socksPort: port);
             var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
 
             var result = await runtime.StartAsync(profile.Id, CancellationToken.None);
 
             Assert.False(result.Succeeded);
-            Assert.Contains("SOCKS port", result.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Failed to start proxy", result.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
-            listener.Stop();
             DeleteDatabase(databasePath);
         }
     }
@@ -93,6 +93,7 @@ public sealed class LocalProxyRuntimeServiceTests
         services.AddSingleton<ISecretProtector, PassThroughSecretProtector>();
         services.AddSingleton<IClock, TestClock>();
         services.AddSingleton<IOperationalEventSink, NoopOperationalEventSink>();
+        services.AddSingleton<ICommandRunner, FakeCommandRunner>();
         services.AddSingleton<XrayConfigRenderer>();
         services.AddSingleton<IXrayProcessRunner, ThrowingXrayProcessRunner>();
         services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(Path.GetTempPath()));

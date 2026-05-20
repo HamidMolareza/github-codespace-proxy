@@ -54,3 +54,5 @@ public sealed record LocalProxyRuntimeResultResponse(
     LocalProxySessionResponse? Session);
 
 public sealed record LocalProxyProbeRequest(string? ProxyUrl);
+
+public sealed record CodespaceProxyStartRequest(Guid? ProfileId);

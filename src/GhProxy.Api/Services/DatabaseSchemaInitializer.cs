@@ -92,7 +92,7 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
                 "Name" TEXT NOT NULL,
                 "BindHost" TEXT NOT NULL,
                 "LocalPort" INTEGER NOT NULL,
-                "SocksPort" INTEGER NOT NULL DEFAULT 8902,
+                "SocksPort" INTEGER NOT NULL DEFAULT 8901,
                 "ProxyUsername" TEXT NULL,
                 "ProtectedProxyPassword" TEXT NULL,
                 "IdleShutdownMinutes" INTEGER NOT NULL,
@@ -114,7 +114,7 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
                 "Status" TEXT NOT NULL,
                 "BindHost" TEXT NOT NULL,
                 "LocalPort" INTEGER NOT NULL,
-                "SocksPort" INTEGER NOT NULL DEFAULT 8902,
+                "SocksPort" INTEGER NOT NULL DEFAULT 8901,
                 "StartedAt" TEXT NOT NULL,
                 "LastActivityAt" TEXT NOT NULL,
                 "StoppedAt" TEXT NULL,
@@ -140,8 +140,8 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
             WHERE "Status" IN ('Starting', 'Running');
             """,
             cancellationToken);
-        await AddColumnIfMissingAsync("LocalProxyProfiles", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8902", cancellationToken);
-        await AddColumnIfMissingAsync("LocalProxySessions", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8902", cancellationToken);
+        await AddColumnIfMissingAsync("LocalProxyProfiles", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8901", cancellationToken);
+        await AddColumnIfMissingAsync("LocalProxySessions", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8901", cancellationToken);
         await NormalizeLocalProxySocksPortsAsync(cancellationToken);
         await db.Database.ExecuteSqlRawAsync(
             """
@@ -180,31 +180,16 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
 
     private async Task NormalizeLocalProxySocksPortsAsync(CancellationToken cancellationToken)
     {
-        var profiles = (await db.LocalProxyProfiles.ToListAsync(cancellationToken))
-            .OrderBy(x => x.CreatedAt)
-            .ToList();
-        var used = new HashSet<int>();
-        var nextPort = 8902;
-        foreach (var profile in profiles)
+        var profiles = await db.LocalProxyProfiles.ToListAsync(cancellationToken);
+        foreach (var profile in profiles.Where(profile => profile.SocksPort != profile.LocalPort))
         {
-            used.Add(profile.LocalPort);
+            profile.SocksPort = profile.LocalPort;
         }
 
-        foreach (var profile in profiles)
+        var sessions = await db.LocalProxySessions.ToListAsync(cancellationToken);
+        foreach (var session in sessions.Where(session => session.SocksPort != session.LocalPort))
         {
-            if (profile.SocksPort is < 1 or > 65535 ||
-                profile.SocksPort == profile.LocalPort ||
-                used.Contains(profile.SocksPort))
-            {
-                while (used.Contains(nextPort) && nextPort < 9000)
-                {
-                    nextPort++;
-                }
-
-                profile.SocksPort = nextPort;
-            }
-
-            used.Add(profile.SocksPort);
+            session.SocksPort = session.LocalPort;
         }
 
         if (db.ChangeTracker.HasChanges())

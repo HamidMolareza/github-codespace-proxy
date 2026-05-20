@@ -19,7 +19,6 @@ services:
     ports:
       - "127.0.0.1:5080:8080"
       - "127.0.0.1:8901:8901"
-      - "127.0.0.1:8902:8902"
     volumes:
       - gh-proxy-data:/app/data
     healthcheck:

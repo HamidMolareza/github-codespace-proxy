@@ -7,17 +7,17 @@
 - Database: SQLite through EF Core.
 - GitHub integration: direct `HttpClient` calls to official GitHub REST API endpoints.
 - Active control plane location: trusted local workstation or local Docker Compose stack.
-- Active product mode: multi-account GitHub Codespaces manager with a separate Xray-backed local proxy tool.
-- Local proxy mode: backend-managed Xray process with HTTP and SOCKS5 inbounds.
+- Active product mode: multi-account GitHub Codespaces manager with a Codespace-backed Xray proxy.
+- Proxy mode: backend-managed Xray process routed through a host-local `autossh` tunnel to the selected Codespace.
 
 ## Local Proxy Boundaries
 
 - The default HTTP proxy endpoint is `http://127.0.0.1:8901`.
-- The default SOCKS proxy endpoint is `socks5h://127.0.0.1:8902`.
-- The proxy exits through the same machine/network as the backend.
-- Docker Compose binds Xray listeners inside the container and exposes them only on host localhost.
+- The default SOCKS proxy endpoint is `socks5h://127.0.0.1:8901`.
+- Xray exits through the selected Codespace remote proxy on `127.0.0.1:8899`.
+- Docker Compose exposes the control plane, but host-local execution is the supported Codespace tunnel mode.
 - Optional proxy authentication is passed to Xray HTTP and SOCKS inbounds from protected password storage.
-- The app does not run a VPS tunnel or use GitHub Codespaces as a proxy backend.
+- The app does not run a VPS tunnel.
 
 ## GitHub API Boundaries
 
@@ -27,7 +27,7 @@
 - Codespace start/stop/export/delete use authenticated-user Codespaces endpoints.
 - Billing usage uses `GET /users/{username}/settings/billing/usage/summary?product=Codespaces` when available.
 
-The app does not create or manage proxy workloads, does not run tunnel commands against Codespaces, and does not rotate accounts to bypass quota. Low or unavailable quota data is informational; accounts marked limited block create/start actions in this app.
+The app assumes the selected Codespace repository provides the proxy workload. It runs tunnel commands against user-authorized Codespaces and does not rotate accounts to bypass quota. Low or unavailable quota data is informational; accounts marked limited block create/start actions in this app.
 
 ## Security
 

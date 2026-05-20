@@ -139,6 +139,12 @@ public static class GitHubEndpoints
         accounts.MapPost("/{id:guid}/codespaces/{name}/start", async (Guid id, string name, GitHubCodespaceService service, CancellationToken ct) =>
             Results.Ok(new GitHubLifecycleResultResponse(true, "Codespace start request submitted.", ToResponse(await service.StartAsync(id, name, ct)))));
 
+        accounts.MapPost("/{id:guid}/codespaces/{name}/proxy/start", async (Guid id, string name, CodespaceProxyStartRequest request, LocalProxyRuntimeService runtime, CancellationToken ct) =>
+        {
+            var result = await runtime.StartCodespaceProxyAsync(id, name, request.ProfileId, ct);
+            return Results.Ok(new LocalProxyRuntimeResultResponse(result.Succeeded, result.Message, LocalProxyEndpoints.ToResponse(result.Session)));
+        });
+
         accounts.MapPost("/{id:guid}/codespaces/{name}/stop", async (Guid id, string name, GitHubCodespaceService service, CancellationToken ct) =>
             Results.Ok(new GitHubLifecycleResultResponse(true, "Codespace stop request submitted.", ToResponse(await service.StopAsync(id, name, ct)))));
 

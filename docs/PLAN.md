@@ -1,25 +1,22 @@
-# Safe Multi-Account Codespaces Manager Plan
+# Codespace-Backed Proxy Plan
 
 ## Summary
 
-The active app workflow manages multiple GitHub username/PAT records and normal Codespaces lifecycle. The UI has separate tabs for Codespaces, Local Proxy, and Activity. Codespaces are not used as proxy infrastructure.
+The active workflow manages GitHub username/PAT records and runs a proxy through the selected GitHub Codespace. One Run action starts or resumes the Codespace, verifies the remote proxy on `127.0.0.1:8899`, opens an `autossh` tunnel, starts Xray, and exposes one local mixed HTTP/SOCKS port.
 
 ## Milestones
 
 1. Keep GitHub account and Codespace snapshot persistence.
-2. Restore the Codespaces UI for account CRUD, validation, usage, sync, and lifecycle actions.
-3. Add row refresh and lifecycle polling so start/stop/create progress is visible.
-4. Keep local proxy as a separate Xray-backed direct local tool with HTTP and SOCKS endpoints.
-5. Keep shared Activity and diagnostics for GitHub and local proxy events.
-6. Update Docker/local docs and validation commands.
-7. Add tests for Codespace row refresh and preserve local proxy tests.
+2. Use native `gh` and `autossh` for host-local Codespace tunnel orchestration.
+3. Route Xray through the hidden Codespace tunnel instead of direct `freedom` outbound.
+4. Expose one public port for both HTTP and SOCKS clients.
+5. Show Codespace proxy progress and failures through Activity with redacted command output.
 
 ## Acceptance Criteria
 
 - A user can add, edit, view, and delete GitHub account records.
 - A user can validate a PAT and sync Codespaces for that account.
-- A user can create, start, stop, export, delete, and refresh a Codespace.
-- Start/stop/create actions show progress and update final state.
-- Limited accounts disable create/start behavior through backend validation.
-- The Local Proxy tab continues to expose only a local proxy endpoint.
-- Activity shows GitHub and local proxy operational events with redaction.
+- A user can click Run Proxy on a Codespace and use both `http://127.0.0.1:8901` and `socks5h://127.0.0.1:8901`.
+- GitHub `409 Conflict` during start is treated as a refreshable lifecycle state instead of an unhandled exception.
+- Limited accounts block create/start behavior through backend validation.
+- Activity shows GitHub, tunnel, Xray, probe, and idle-stop events with redaction.
