@@ -97,18 +97,14 @@ public static class ObservabilityEndpoints
                 lastError is null ? null : ToResponse(lastError)));
         });
 
-        group.MapGet("/diagnostics/runtime", async (AppDbContext db, ICommandRunner runner, IOptions<ProxyRuntimeOptions> options, CancellationToken ct) =>
+        group.MapGet("/diagnostics/runtime", async (AppDbContext db, IOptions<GitHubOptions> options, CancellationToken ct) =>
         {
             var databaseAvailable = await db.Database.CanConnectAsync(ct);
-            var tools = new List<ToolDiagnosticResponse>();
-            foreach (var tool in new[] { "ssh", "scp", options.Value.TunnelCommandName, "ss" }.Distinct(StringComparer.OrdinalIgnoreCase))
+            var tools = new List<ToolDiagnosticResponse>
             {
-                var result = await runner.RunAsync(new CommandSpec("bash", ["-lc", $"command -v {tool}"], TimeSpan.FromSeconds(3), $"diagnostic.{tool}"), ct);
-                tools.Add(new ToolDiagnosticResponse(
-                    tool,
-                    result.Succeeded && !string.IsNullOrWhiteSpace(result.StandardOutput),
-                    result.Succeeded ? result.StandardOutput.Trim() : result.StandardError.Trim()));
-            }
+                new("GitHub API", Uri.TryCreate(options.Value.ApiBaseUrl, UriKind.Absolute, out _), options.Value.ApiBaseUrl),
+                new("Data Protection", Directory.Exists(Path.Combine(AppContext.BaseDirectory, "data", "keys")), "Keys are persisted under the app data directory.")
+            };
 
             return Results.Ok(new RuntimeDiagnosticsResponse(databaseAvailable, tools));
         });

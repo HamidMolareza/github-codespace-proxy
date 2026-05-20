@@ -5,13 +5,25 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
+var dataPath = Path.Combine(builder.Environment.ContentRootPath, "data");
+Directory.CreateDirectory(dataPath);
+Directory.CreateDirectory(Path.Combine(dataPath, "keys"));
 
 builder.Services.AddOpenApi();
 builder.Services.Configure<ProxyRuntimeOptions>(builder.Configuration.GetSection("ProxyRuntime"));
 builder.Services.Configure<ObservabilityOptions>(builder.Configuration.GetSection("Observability"));
-builder.Services.AddDataProtection().SetApplicationName("GhProxy");
+builder.Services.Configure<GitHubOptions>(builder.Configuration.GetSection("GitHub"));
+builder.Services.AddDataProtection()
+    .SetApplicationName("GhProxy")
+    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataPath, "keys")));
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? "Data Source=data/gh-proxy.db"));
+builder.Services.AddHttpClient<IGitHubApiClient, GitHubApiClient>((serviceProvider, client) =>
+{
+    var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<GitHubOptions>>().Value;
+    client.BaseAddress = new Uri(options.ApiBaseUrl);
+    client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
+});
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<ICorrelationContext, CorrelationContext>();
 builder.Services.AddSingleton<ISensitiveDataRedactor, SensitiveDataRedactor>();
@@ -23,7 +35,9 @@ builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<NodeConfigRenderer>();
 builder.Services.AddScoped<VpsRuntimeService>();
 builder.Services.AddScoped<TunnelService>();
+builder.Services.AddScoped<GitHubCodespaceService>();
 builder.Services.AddHostedService<IdleShutdownService>();
+builder.Services.AddHostedService<GitHubCodespaceMaintenanceService>();
 builder.Services.AddHostedService<ObservabilityRetentionService>();
 builder.Services.AddCors(options =>
 {
@@ -35,7 +49,7 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "data"));
+Directory.CreateDirectory(dataPath);
 using (var scope = app.Services.CreateScope())
 {
     var initializer = scope.ServiceProvider.GetRequiredService<DatabaseSchemaInitializer>();
@@ -55,6 +69,7 @@ app.MapGet("/api/health", (ICorrelationContext correlation) =>
     Results.Ok(new { status = "ok", at = DateTimeOffset.UtcNow, correlationId = correlation.CorrelationId }));
 app.MapNodeEndpoints();
 app.MapSessionEndpoints();
+app.MapGitHubEndpoints();
 app.MapObservabilityEndpoints();
 
 app.Run();

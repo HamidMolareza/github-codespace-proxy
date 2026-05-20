@@ -1,25 +1,28 @@
-# VPS Proxy Panel Plan
+# GitHub Codespaces Manager Plan
 
 ## Summary
 
-Build a local admin panel using ASP.NET Core/.NET 10 and React/Vite. The app manages self-owned VPS proxy nodes over SSH, deploys a Docker Compose based `3proxy` service, starts a local tunnel on `127.0.0.1:8901`, and stops idle sessions after 30 minutes of inactivity.
+Pivot the app from a VPS proxy panel into a GitHub account and Codespaces admin panel. The active UI stores GitHub username/PAT records, validates tokens, syncs Codespaces, shows usage where GitHub exposes it, and provides normal Codespaces lifecycle actions.
+
+This plan intentionally excludes proxy/tunnel automation, Codespaces-as-proxy behavior, quota-bypass rotation, and automatic switching between accounts.
 
 ## Milestones
 
-1. Initialize repository and documentation.
-2. Scaffold backend, frontend, and tests.
-3. Add persistence and VPS node CRUD.
-4. Add SSH, Docker Compose, and tunnel control services.
-5. Build the React admin panel.
-6. Add structured local observability, runtime diagnostics, and Activity UI.
-7. Validate and document operations.
+1. Add GitHub account and Codespace snapshot persistence.
+2. Add encrypted PAT storage and redacted GitHub API observability.
+3. Add official GitHub REST API client for user validation, Codespaces sync, lifecycle actions, export, and billing usage.
+4. Add safe maintenance automation: scheduled sync and idle auto-stop only.
+5. Replace the active frontend with a Codespaces dashboard.
+6. Update Docker/local docs and validation commands.
+7. Add tests for schema creation, sync behavior, limited-account blocking, and secret redaction.
 
 ## Acceptance Criteria
 
-- A user can add, edit, view, and delete VPS nodes.
-- A user can bootstrap a node using SSH and Docker Compose.
-- A user can start and stop the local proxy tunnel from the panel.
-- The app stops the active tunnel and remote proxy after the configured idle window.
-- Secrets are redacted from logs and never committed.
-- The Activity tab shows recent events, command failures, diagnostics, and correlation IDs.
+- A user can add, edit, view, and delete GitHub account records.
+- PAT values are encrypted at rest, redacted from logs, and never returned by API responses.
+- A user can validate an account token.
+- A user can sync and inspect Codespaces grouped by selected account.
+- A user can create, start, stop, export, and delete a Codespace through the UI.
+- Usage is displayed when GitHub billing APIs allow it; otherwise the UI clearly shows that usage is unavailable.
+- The app can auto-stop idle Codespaces after the configured idle window.
 - Operational events are persisted in SQLite and optional JSONL files with bounded redacted output.

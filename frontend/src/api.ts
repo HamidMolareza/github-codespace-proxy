@@ -1,12 +1,14 @@
 import type {
   ActivityFilters,
   ActivitySummary,
+  CodespaceSnapshot,
+  CreateCodespaceForm,
+  GitHubAccount,
+  GitHubAccountForm,
+  GitHubLifecycleResult,
+  GitHubUsage,
   OperationalEvent,
-  ProxySession,
-  RuntimeDiagnostics,
-  RuntimeResult,
-  VpsNode,
-  VpsNodeForm
+  RuntimeDiagnostics
 } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -31,37 +33,51 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  nodes: () => request<VpsNode[]>('/api/nodes'),
-  activeSession: () => request<ProxySession | null>('/api/sessions/active'),
-  createNode: (form: VpsNodeForm) =>
-    request<VpsNode>('/api/nodes', {
+  accounts: () => request<GitHubAccount[]>('/api/github/accounts'),
+  createAccount: (form: GitHubAccountForm) =>
+    request<GitHubAccount>('/api/github/accounts', {
       method: 'POST',
-      body: JSON.stringify(form)
+      body: JSON.stringify(emptyToNull(form))
     }),
-  updateNode: (id: string, form: VpsNodeForm) =>
-    request<VpsNode>(`/api/nodes/${id}`, {
+  updateAccount: (id: string, form: GitHubAccountForm) =>
+    request<GitHubAccount>(`/api/github/accounts/${id}`, {
       method: 'PUT',
-      body: JSON.stringify(form)
+      body: JSON.stringify(emptyToNull(form))
     }),
-  deleteNode: (id: string) =>
-    request<void>(`/api/nodes/${id}`, {
+  deleteAccount: (id: string) =>
+    request<void>(`/api/github/accounts/${id}`, {
       method: 'DELETE'
     }),
-  bootstrapNode: (id: string) =>
-    request<RuntimeResult>(`/api/nodes/${id}/bootstrap`, {
+  validateAccount: (id: string) =>
+    request<GitHubAccount>(`/api/github/accounts/${id}/validate`, {
       method: 'POST'
     }),
-  probeNode: (id: string) =>
-    request<RuntimeResult>(`/api/nodes/${id}/status`, {
+  syncAccount: (id: string) =>
+    request<CodespaceSnapshot[]>(`/api/github/accounts/${id}/sync`, {
       method: 'POST'
     }),
-  startProxy: (id: string) =>
-    request<ProxySession>(`/api/sessions/start/${id}`, {
+  usage: (id: string) => request<GitHubUsage>(`/api/github/accounts/${id}/usage`),
+  codespaces: (id: string) => request<CodespaceSnapshot[]>(`/api/github/accounts/${id}/codespaces`),
+  createCodespace: (id: string, form: CreateCodespaceForm) =>
+    request<GitHubLifecycleResult>(`/api/github/accounts/${id}/codespaces`, {
+      method: 'POST',
+      body: JSON.stringify(emptyToNull(form))
+    }),
+  startCodespace: (accountId: string, name: string) =>
+    request<GitHubLifecycleResult>(`/api/github/accounts/${accountId}/codespaces/${encodeURIComponent(name)}/start`, {
       method: 'POST'
     }),
-  stopProxy: () =>
-    request<ProxySession | null>('/api/sessions/stop', {
+  stopCodespace: (accountId: string, name: string) =>
+    request<GitHubLifecycleResult>(`/api/github/accounts/${accountId}/codespaces/${encodeURIComponent(name)}/stop`, {
       method: 'POST'
+    }),
+  exportCodespace: (accountId: string, name: string) =>
+    request<GitHubLifecycleResult>(`/api/github/accounts/${accountId}/codespaces/${encodeURIComponent(name)}/export`, {
+      method: 'POST'
+    }),
+  deleteCodespace: (accountId: string, name: string) =>
+    request<void>(`/api/github/accounts/${accountId}/codespaces/${encodeURIComponent(name)}`, {
+      method: 'DELETE'
     }),
   activity: (filters: ActivityFilters) => {
     const params = new URLSearchParams();
@@ -84,18 +100,27 @@ export const api = {
   runtimeDiagnostics: () => request<RuntimeDiagnostics>('/api/diagnostics/runtime')
 };
 
+function emptyToNull<T extends object>(value: T) {
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item === '' ? null : item]));
+}
+
 function formatError(text: string, status: number) {
   if (!text) {
     return `Request failed with ${status}`;
   }
 
   try {
-    const body = JSON.parse(text) as { error?: string; correlationId?: string };
+    const body = JSON.parse(text) as { error?: string; correlationId?: string; errors?: Record<string, string[]> };
     if (body.error && body.correlationId) {
       return `${body.error} Correlation ${body.correlationId}`;
     }
     if (body.error) {
       return body.error;
+    }
+    if (body.errors) {
+      return Object.entries(body.errors)
+        .map(([key, messages]) => `${key}: ${messages.join(', ')}`)
+        .join(' ');
     }
   } catch {
     return text;

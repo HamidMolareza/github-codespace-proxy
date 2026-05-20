@@ -1,18 +1,21 @@
-# GH Proxy
+# GitHub Codespaces Manager
 
-Local admin panel for managing self-owned VPS proxy nodes.
+Local admin panel for managing multiple GitHub accounts and their Codespaces.
 
-The application runs on a trusted workstation and controls VPS nodes over SSH. It deploys an authenticated HTTP/SOCKS proxy with Docker Compose, starts a local tunnel on demand, and stops idle sessions automatically.
+The application runs on a trusted workstation or VPS, stores GitHub username/PAT pairs with ASP.NET Core Data Protection, validates tokens, lists Codespaces, shows best-effort usage data, and controls normal Codespaces lifecycle actions through the official GitHub REST API.
 
 ## Scope
 
-- Manage VPS node records.
-- Bootstrap proxy runtime over SSH.
-- Start and stop a local proxy tunnel.
-- Track activity and shut down idle sessions.
-- Inspect operational activity, command failures, diagnostics, and correlation IDs.
+- Create, read, update, and delete GitHub account records.
+- Store PATs encrypted at rest and never return PAT values from the API.
+- Validate tokens with `GET /user`.
+- Sync Codespaces with `GET /user/codespaces`.
+- Create, start, stop, export, and delete Codespaces with official GitHub API endpoints.
+- Show usage from GitHub billing usage APIs when the token/account can access them.
+- Auto-stop idle running Codespaces after the configured idle window.
+- Inspect operational activity, GitHub API failures, diagnostics, and correlation IDs.
 
-GitHub Codespaces account rotation is intentionally out of scope. Codespaces may be monitored or shut down safely, but this project does not automate quota bypass or multi-account rotation.
+This project does not implement Codespaces-as-proxy, port forwarding, proxy process management, quota-bypass rotation, or automatic switch-to-next-account behavior.
 
 ## Run Locally
 
@@ -58,18 +61,16 @@ Stop it:
 docker compose down
 ```
 
-Data is stored in the named Docker volume `gh-proxy_gh-proxy-data`. The Compose file mounts `${HOME}/.ssh` read-only at `/root/.ssh` so node SSH key paths can use `/root/.ssh/<key-name>` inside the container. The Docker profile uses `ssh` for tunnels; local workstation runs still default to `autossh`.
+Data is stored in the named Docker volume `gh-proxy_gh-proxy-data`.
 
 ## Validate
 
 ```bash
-dotnet build src/GhProxy.Api/GhProxy.Api.csproj --no-restore
-dotnet test tests/GhProxy.Tests/GhProxy.Tests.csproj --no-build
+dotnet build GhProxy.sln --no-restore
+dotnet test tests/GhProxy.Tests/GhProxy.Tests.csproj --no-restore
 cd frontend && npm run lint && npm run build
 docker compose config
 ```
-
-In this sandbox, the .NET test runner needs permission to open its local socket transport.
 
 ## Observability
 
@@ -79,4 +80,4 @@ The API writes structured operational events to SQLite and, by default, JSONL fi
 - `GET /api/activity/summary`
 - `GET /api/diagnostics/runtime`
 
-Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. Command output is bounded and redacted before it is stored or returned.
+Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. GitHub API paths, status codes, failures, and bounded response snippets are recorded with secret redaction.

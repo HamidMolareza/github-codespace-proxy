@@ -24,7 +24,7 @@ The repository includes `compose.yml` for running both services:
 
 - `backend`: ASP.NET Core API on container port `8080`, published as `127.0.0.1:5080`.
 - `frontend`: Node serving the built React app on container port `8080`, published as `127.0.0.1:5173`.
-- `gh-proxy-data`: named volume for SQLite, JSONL logs, and SSH known-hosts.
+- `gh-proxy-data`: named volume for SQLite, JSONL logs, and Data Protection state.
 
 Start:
 
@@ -59,42 +59,37 @@ Remove persisted app data only when you intentionally want a clean database:
 docker compose down -v
 ```
 
-The backend container mounts `${HOME}/.ssh` as read-only at `/root/.ssh`. When adding a node from the Dockerized app, use an SSH key path that exists inside the container, for example `/root/.ssh/id_rsa`. The app writes SSH known hosts to `/app/data/known_hosts`, not into your mounted SSH directory.
+## GitHub Account Setup
 
-The Docker stack sets `ProxyRuntime__TunnelCommandName=ssh` to avoid depending on `autossh` inside the image. Local non-Docker runs still default to `autossh`.
+1. Create a GitHub PAT with Codespaces permissions. Classic PATs need the `codespace` scope. Billing usage may require additional account/plan access and can be unavailable for some tokens.
+2. Open the dashboard and add the GitHub username plus PAT.
+3. Click validate to confirm the token maps to the expected authenticated user.
+4. Click sync to load Codespaces.
+5. Use create/start/stop/export/delete actions from the Codespaces table.
 
-Run `curl http://127.0.0.1:5080/api/diagnostics/runtime` after startup. If `ssh`, `scp`, or `ss` is missing in your local .NET SDK base image, extend `src/GhProxy.Api/Dockerfile` with a reachable apt mirror and install `openssh-client` and `iproute2`, or run the API directly on the host.
+PAT values are encrypted at rest and are not displayed after save.
 
-## VPS Requirements
+## Idle Auto-Stop
 
-Each node should have:
+The `GitHubCodespaceMaintenanceService` periodically syncs account Codespaces and stops running Codespaces that have been idle longer than `GitHub:AutoStopIdleMinutes`.
 
-- SSH access with a key file available on the workstation.
-- Docker and Docker Compose V2.
-- Outbound network access from the VPS.
-- A normal Linux shell that can run commands through non-interactive SSH.
+Configuration lives under `GitHub` in `src/GhProxy.Api/appsettings.json`:
 
-The app stores the SSH key path, not the key contents.
+```json
+"GitHub": {
+  "ApiBaseUrl": "https://api.github.com/",
+  "ApiVersion": "2026-03-10",
+  "SyncIntervalSeconds": 300,
+  "AutoStopIdleMinutes": 30,
+  "RequestTimeoutSeconds": 30
+}
+```
 
-## Node Lifecycle
-
-1. Add a VPS node in the panel.
-2. Click bootstrap to upload `docker-compose.yml` and `3proxy.cfg` into `~/.gh-proxy` on the VPS.
-3. Click start to run the remote proxy and create a local tunnel.
-4. Configure clients to use `127.0.0.1:<local port>`.
-5. Click stop to shut down the local tunnel and remote proxy.
-
-The generated Docker Compose file binds the remote proxy ports to `127.0.0.1` on the VPS. Clients should connect through the local SSH tunnel, not directly to a public VPS proxy port.
-
-## Idle Shutdown
-
-The background worker checks active local TCP connections on the tunnel port with `ss`. If no activity is seen for the configured idle window, it kills the local tunnel process and runs `docker compose down` on the VPS.
-
-Configuration lives under `ProxyRuntime` in `src/GhProxy.Api/appsettings.json`.
+The worker only stops idle Codespaces. It does not delete Codespaces automatically and does not start another account when quota is low.
 
 ## Observability
 
-The Activity tab shows recent operational events, command failures, runtime diagnostics, and redacted command output snippets. Use it first when a bootstrap, SSH/SCP copy, Docker Compose action, tunnel start, or idle shutdown does not behave as expected.
+The Activity tab shows recent operational events, GitHub API failures, runtime diagnostics, and redacted output snippets. Use it first when token validation, sync, usage, or lifecycle actions do not behave as expected.
 
 Each API request receives an `X-Correlation-ID` response header. If an API call fails, copy the correlation ID from the UI or browser network panel and filter Activity by that value.
 
@@ -111,9 +106,7 @@ The backend stores events in SQLite table `OperationalEvents` and writes local J
 
 JSONL retention only deletes files matching `operational-*.jsonl` after `RetentionDays`. The retention worker does not delete the SQLite event table.
 
-Runtime diagnostics check local tool availability for `ssh`, `scp`, `autossh`, and `ss`. A missing `autossh` means the app can still manage node records, but it cannot keep the local tunnel alive.
-
-Secrets are redacted before command output, command display strings, details JSON, and error messages are persisted. Do not paste raw proxy passwords or PAT-like tokens into node notes or shell commands.
+Secrets are redacted before command output, command display strings, details JSON, and error messages are persisted.
 
 ## Git Commands In This Workspace
 

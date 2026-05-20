@@ -24,10 +24,17 @@ public sealed class ApiExceptionMiddleware(
                 Details: new { context.Request.Method, Path = context.Request.Path.Value }),
                 context.RequestAborted);
 
-            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            context.Response.StatusCode = ex switch
+            {
+                GitHubApiException github => github.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden
+                    ? StatusCodes.Status502BadGateway
+                    : StatusCodes.Status502BadGateway,
+                InvalidOperationException => StatusCodes.Status400BadRequest,
+                _ => StatusCodes.Status500InternalServerError
+            };
             await context.Response.WriteAsJsonAsync(new
             {
-                error = "Unexpected server error.",
+                error = ex is GitHubApiException or InvalidOperationException ? message : "Unexpected server error.",
                 correlationId = correlation.CorrelationId
             });
         }

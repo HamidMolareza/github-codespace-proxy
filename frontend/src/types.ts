@@ -1,56 +1,67 @@
-export type VpsNodeStatus = 'Unknown' | 'Ready' | 'Running' | 'Stopped' | 'Error';
-export type ProxySessionStatus = 'Starting' | 'Running' | 'Stopping' | 'Stopped' | 'Error';
+export type GitHubAccountValidationStatus = 'Unknown' | 'Valid' | 'Invalid' | 'Error';
+export type GitHubAccountQuotaState = 'Unknown' | 'Healthy' | 'Limited' | 'Unavailable';
 
-export interface VpsNode {
+export interface GitHubAccount {
   id: string;
-  name: string;
-  host: string;
-  sshPort: number;
-  sshUsername: string;
-  sshKeyPath: string;
-  region?: string | null;
-  notes?: string | null;
-  localPort: number;
-  remoteHttpPort: number;
-  remoteSocksPort: number;
-  proxyUsername: string;
-  status: VpsNodeStatus;
+  displayName: string;
+  username: string;
+  plan: string;
+  validationStatus: GitHubAccountValidationStatus;
+  quotaState: GitHubAccountQuotaState;
+  validationMessage?: string | null;
+  lastError?: string | null;
+  lastValidatedAt?: string | null;
+  lastSyncedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface VpsNodeForm {
-  name: string;
-  host: string;
-  sshPort: number;
-  sshUsername: string;
-  sshKeyPath: string;
-  region: string;
-  notes: string;
-  localPort: number;
-  remoteHttpPort: number;
-  remoteSocksPort: number;
-  proxyUsername: string;
-  proxyPassword: string;
+export interface GitHubAccountForm {
+  displayName: string;
+  username: string;
+  personalAccessToken: string;
+  plan: string;
 }
 
-export interface ProxySession {
+export interface CodespaceSnapshot {
   id: string;
-  nodeId: string;
-  nodeName: string;
-  status: ProxySessionStatus;
-  tunnelProcessId?: number | null;
-  localPort: number;
-  remotePort: number;
-  startedAt: string;
-  lastActivityAt: string;
-  stoppedAt?: string | null;
-  lastError?: string | null;
+  accountId: string;
+  name: string;
+  state: string;
+  repositoryFullName?: string | null;
+  machineDisplayName?: string | null;
+  location?: string | null;
+  webUrl?: string | null;
+  billableOwner?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  lastUsedAt?: string | null;
+  lastSyncedAt: string;
 }
 
-export interface RuntimeResult {
+export interface CreateCodespaceForm {
+  repositoryOwner: string;
+  repositoryName: string;
+  ref: string;
+  geo: string;
+  machine: string;
+  displayName: string;
+  idleTimeoutMinutes: number;
+}
+
+export interface GitHubUsage {
+  state: GitHubAccountQuotaState;
+  message: string;
+  quantity?: number | null;
+  unitType?: string | null;
+  netAmount?: number | null;
+  billingUrl: string;
+}
+
+export interface GitHubLifecycleResult {
   succeeded: boolean;
   message: string;
+  codespace?: CodespaceSnapshot | null;
 }
 
 export interface OperationalEvent {

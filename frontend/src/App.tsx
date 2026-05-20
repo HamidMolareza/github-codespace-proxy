@@ -2,21 +2,22 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
-  Cable,
   CheckCircle2,
   CircleStop,
+  Cloud,
   Copy,
   Database,
+  Download,
+  ExternalLink,
   Filter,
+  Github,
   Pencil,
   Play,
   Plus,
   RefreshCw,
-  Server,
   ShieldCheck,
   Terminal,
   Trash2,
-  UploadCloud,
   Wrench,
   XCircle
 } from 'lucide-react';
@@ -24,30 +25,33 @@ import { api } from './api';
 import type {
   ActivityFilters,
   ActivitySummary,
+  CodespaceSnapshot,
+  CreateCodespaceForm,
+  GitHubAccount,
+  GitHubAccountForm,
+  GitHubLifecycleResult,
+  GitHubUsage,
   OperationalEvent,
-  ProxySession,
-  RuntimeDiagnostics,
-  RuntimeResult,
-  VpsNode,
-  VpsNodeForm
+  RuntimeDiagnostics
 } from './types';
 
-const emptyForm: VpsNodeForm = {
-  name: '',
-  host: '',
-  sshPort: 22,
-  sshUsername: 'root',
-  sshKeyPath: '~/.ssh/id_rsa',
-  region: '',
-  notes: '',
-  localPort: 8901,
-  remoteHttpPort: 3128,
-  remoteSocksPort: 1080,
-  proxyUsername: 'proxy',
-  proxyPassword: ''
+const emptyAccountForm: GitHubAccountForm = {
+  displayName: '',
+  username: '',
+  personalAccessToken: '',
+  plan: 'Unknown'
 };
 
-const idleMinutes = 30;
+const emptyCodespaceForm: CreateCodespaceForm = {
+  repositoryOwner: '',
+  repositoryName: '',
+  ref: '',
+  geo: 'UsEast',
+  machine: '',
+  displayName: '',
+  idleTimeoutMinutes: 30
+};
+
 const defaultActivityFilters: ActivityFilters = {
   severity: '',
   eventType: '',
@@ -57,25 +61,48 @@ const defaultActivityFilters: ActivityFilters = {
 };
 
 export default function App() {
-  const [nodes, setNodes] = useState<VpsNode[]>([]);
-  const [activeSession, setActiveSession] = useState<ProxySession | null>(null);
+  const [accounts, setAccounts] = useState<GitHubAccount[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [codespaces, setCodespaces] = useState<CodespaceSnapshot[]>([]);
+  const [usage, setUsage] = useState<GitHubUsage | null>(null);
   const [activityEvents, setActivityEvents] = useState<OperationalEvent[]>([]);
   const [activitySummary, setActivitySummary] = useState<ActivitySummary | null>(null);
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null);
   const [activityFilters, setActivityFilters] = useState<ActivityFilters>(defaultActivityFilters);
   const [selectedEvent, setSelectedEvent] = useState<OperationalEvent | null>(null);
-  const [activeTab, setActiveTab] = useState<'nodes' | 'activity'>('nodes');
-  const [form, setForm] = useState<VpsNodeForm>(emptyForm);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'codespaces' | 'activity'>('codespaces');
+  const [accountForm, setAccountForm] = useState<GitHubAccountForm>(emptyAccountForm);
+  const [codespaceForm, setCodespaceForm] = useState<CreateCodespaceForm>(emptyCodespaceForm);
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string>('Ready');
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    const [nodeList, session] = await Promise.all([api.nodes(), api.activeSession()]);
-    setNodes(nodeList);
-    setActiveSession(session);
+  const selectedAccount = useMemo(
+    () => accounts.find((account) => account.id === selectedAccountId) ?? null,
+    [accounts, selectedAccountId]
+  );
+
+  const loadAccounts = useCallback(async () => {
+    const nextAccounts = await api.accounts();
+    setAccounts(nextAccounts);
+    setSelectedAccountId((current) => (nextAccounts.some((account) => account.id === current) ? current : (nextAccounts[0]?.id ?? null)));
   }, []);
+
+  const loadCodespaces = useCallback(async (accountId: string | null = selectedAccountId) => {
+    if (!accountId) {
+      setCodespaces([]);
+      setUsage(null);
+      return;
+    }
+
+    const [nextCodespaces, nextUsage] = await Promise.all([
+      api.codespaces(accountId),
+      api.usage(accountId).catch(() => null)
+    ]);
+    setCodespaces(nextCodespaces);
+    setUsage(nextUsage);
+  }, [selectedAccountId]);
 
   const loadActivity = useCallback(async (filters = activityFilters) => {
     const [events, summary, runtimeDiagnostics] = await Promise.all([
@@ -89,19 +116,22 @@ export default function App() {
   }, [activityFilters]);
 
   useEffect(() => {
-    load().catch((err: unknown) => setError(errorMessage(err)));
+    loadAccounts().catch((err: unknown) => setError(errorMessage(err)));
     loadActivity(defaultActivityFilters).catch(() => undefined);
-    const timer = window.setInterval(() => {
-      load().catch(() => undefined);
-      loadActivity().catch(() => undefined);
-    }, 15000);
-    return () => window.clearInterval(timer);
-  }, [load, loadActivity]);
+  }, [loadAccounts, loadActivity]);
 
-  const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === activeSession?.nodeId) ?? null,
-    [activeSession, nodes]
-  );
+  useEffect(() => {
+    loadCodespaces(selectedAccountId).catch(() => undefined);
+  }, [loadCodespaces, selectedAccountId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      loadAccounts().catch(() => undefined);
+      loadCodespaces().catch(() => undefined);
+      loadActivity().catch(() => undefined);
+    }, 20000);
+    return () => window.clearInterval(timer);
+  }, [loadAccounts, loadCodespaces, loadActivity]);
 
   async function runAction(label: string, action: () => Promise<unknown>) {
     setBusy(label);
@@ -109,7 +139,8 @@ export default function App() {
     try {
       const result = await action();
       setMessage(formatResult(label, result));
-      await load();
+      await loadAccounts();
+      await loadCodespaces(selectedAccountId);
       await loadActivity();
     } catch (err) {
       setError(errorMessage(err));
@@ -118,39 +149,48 @@ export default function App() {
     }
   }
 
-  async function saveNode(event: FormEvent) {
+  async function saveAccount(event: FormEvent) {
     event.preventDefault();
-    await runAction(editingId ? 'update-node' : 'create-node', async () => {
-      if (editingId) {
-        return api.updateNode(editingId, form);
+    await runAction(editingAccountId ? 'update-account' : 'create-account', async () => {
+      if (editingAccountId) {
+        return api.updateAccount(editingAccountId, accountForm);
       }
 
-      return api.createNode(form);
+      const created = await api.createAccount(accountForm);
+      setSelectedAccountId(created.id);
+      return created;
     });
-    setForm(emptyForm);
-    setEditingId(null);
+    setAccountForm(emptyAccountForm);
+    setEditingAccountId(null);
   }
 
-  function editNode(node: VpsNode) {
-    setEditingId(node.id);
-    setForm({
-      name: node.name,
-      host: node.host,
-      sshPort: node.sshPort,
-      sshUsername: node.sshUsername,
-      sshKeyPath: node.sshKeyPath,
-      region: node.region ?? '',
-      notes: node.notes ?? '',
-      localPort: node.localPort,
-      remoteHttpPort: node.remoteHttpPort,
-      remoteSocksPort: node.remoteSocksPort,
-      proxyUsername: node.proxyUsername,
-      proxyPassword: ''
+  async function createCodespace(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedAccountId) {
+      setError('Select an account first.');
+      return;
+    }
+
+    await runAction('create-codespace', () => api.createCodespace(selectedAccountId, codespaceForm));
+    setCodespaceForm(emptyCodespaceForm);
+  }
+
+  function editAccount(account: GitHubAccount) {
+    setEditingAccountId(account.id);
+    setAccountForm({
+      displayName: account.displayName,
+      username: account.username,
+      personalAccessToken: '',
+      plan: account.plan
     });
   }
 
-  function updateField<K extends keyof VpsNodeForm>(field: K, value: VpsNodeForm[K]) {
-    setForm((current) => ({ ...current, [field]: value }));
+  function updateAccountField<K extends keyof GitHubAccountForm>(field: K, value: GitHubAccountForm[K]) {
+    setAccountForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateCodespaceField<K extends keyof CreateCodespaceForm>(field: K, value: CreateCodespaceForm[K]) {
+    setCodespaceForm((current) => ({ ...current, [field]: value }));
   }
 
   function updateActivityFilter<K extends keyof ActivityFilters>(field: K, value: ActivityFilters[K]) {
@@ -166,34 +206,34 @@ export default function App() {
     <main className="shell">
       <header className="topbar">
         <div>
-          <h1>GH Proxy</h1>
-          <p>Local control plane for VPS proxy nodes</p>
+          <h1>GitHub Codespaces Manager</h1>
+          <p>Accounts, usage, and Codespaces lifecycle control</p>
         </div>
-        <button className="icon-button" onClick={() => runAction('refresh', load)} disabled={busy !== null} title="Refresh">
+        <button className="icon-button" onClick={() => runAction('refresh', async () => { await loadAccounts(); await loadCodespaces(); })} disabled={busy !== null} title="Refresh">
           <RefreshCw size={18} />
         </button>
       </header>
 
       <section className="status-band">
         <div className="status-tile">
-          <Cable size={20} />
+          <Github size={20} />
           <div>
-            <span>Local endpoint</span>
-            <strong>{activeSession ? `127.0.0.1:${activeSession.localPort}` : 'Off'}</strong>
+            <span>Accounts</span>
+            <strong>{accounts.length}</strong>
+          </div>
+        </div>
+        <div className="status-tile">
+          <Cloud size={20} />
+          <div>
+            <span>Codespaces</span>
+            <strong>{codespaces.length}</strong>
           </div>
         </div>
         <div className="status-tile">
           <Activity size={20} />
           <div>
-            <span>Session</span>
-            <strong>{activeSession ? `${activeSession.status} on ${activeSession.nodeName}` : 'No active tunnel'}</strong>
-          </div>
-        </div>
-        <div className="status-tile">
-          <CircleStop size={20} />
-          <div>
-            <span>Idle shutdown</span>
-            <strong>{activeSession ? idleText(activeSession.lastActivityAt) : `${idleMinutes}m after activity`}</strong>
+            <span>Usage</span>
+            <strong>{usage ? formatUsage(usage) : 'Unknown'}</strong>
           </div>
         </div>
       </section>
@@ -206,9 +246,9 @@ export default function App() {
       )}
 
       <section className="tabs">
-        <button className={activeTab === 'nodes' ? 'active-tab' : ''} onClick={() => setActiveTab('nodes')}>
-          <Server size={16} />
-          Nodes
+        <button className={activeTab === 'codespaces' ? 'active-tab' : ''} onClick={() => setActiveTab('codespaces')}>
+          <Cloud size={16} />
+          Codespaces
         </button>
         <button className={activeTab === 'activity' ? 'active-tab' : ''} onClick={() => setActiveTab('activity')}>
           <Activity size={16} />
@@ -216,119 +256,154 @@ export default function App() {
         </button>
       </section>
 
-      {activeTab === 'nodes' ? (
+      {activeTab === 'codespaces' ? (
         <section className="content-grid">
-          <form className="editor" onSubmit={saveNode}>
-            <div className="section-title">
-              <Server size={20} />
-              <h2>{editingId ? 'Edit VPS Node' : 'Add VPS Node'}</h2>
-            </div>
-            <div className="form-grid">
-              <label>
-                Name
-                <input value={form.name} onChange={(e) => updateField('name', e.target.value)} required />
-              </label>
-              <label>
-                Host
-                <input value={form.host} onChange={(e) => updateField('host', e.target.value)} required />
-              </label>
-              <label>
-                SSH user
-                <input value={form.sshUsername} onChange={(e) => updateField('sshUsername', e.target.value)} required />
-              </label>
-              <label>
-                SSH port
-                <input type="number" min="1" max="65535" value={form.sshPort} onChange={(e) => updateField('sshPort', Number(e.target.value))} required />
-              </label>
-              <label className="wide">
-                SSH key path
-                <input value={form.sshKeyPath} onChange={(e) => updateField('sshKeyPath', e.target.value)} required />
-              </label>
-              <label>
-                Region
-                <input value={form.region} onChange={(e) => updateField('region', e.target.value)} />
-              </label>
-              <label>
-                Local port
-                <input type="number" min="1" max="65535" value={form.localPort} onChange={(e) => updateField('localPort', Number(e.target.value))} required />
-              </label>
-              <label>
-                HTTP port
-                <input type="number" min="1" max="65535" value={form.remoteHttpPort} onChange={(e) => updateField('remoteHttpPort', Number(e.target.value))} required />
-              </label>
-              <label>
-                SOCKS port
-                <input type="number" min="1" max="65535" value={form.remoteSocksPort} onChange={(e) => updateField('remoteSocksPort', Number(e.target.value))} required />
-              </label>
-              <label>
-                Proxy user
-                <input value={form.proxyUsername} onChange={(e) => updateField('proxyUsername', e.target.value)} required />
-              </label>
-              <label>
-                Proxy password
-                <input type="password" value={form.proxyPassword} onChange={(e) => updateField('proxyPassword', e.target.value)} required={!editingId} placeholder={editingId ? 'Leave unchanged' : ''} />
-              </label>
-              <label className="wide">
-                Notes
-                <input value={form.notes} onChange={(e) => updateField('notes', e.target.value)} />
-              </label>
-            </div>
-            <div className="form-actions">
-              <button type="submit" disabled={busy !== null}>
-                <Plus size={16} />
-                {editingId ? 'Save node' : 'Add node'}
-              </button>
-              {editingId && (
-                <button type="button" className="secondary" onClick={() => { setEditingId(null); setForm(emptyForm); }}>
-                  Cancel
+          <section className="panel-stack">
+            <form className="editor" onSubmit={saveAccount}>
+              <div className="section-title">
+                <Github size={20} />
+                <h2>{editingAccountId ? 'Edit GitHub Account' : 'Add GitHub Account'}</h2>
+              </div>
+              <div className="form-grid">
+                <label>
+                  Display name
+                  <input value={accountForm.displayName} onChange={(event) => updateAccountField('displayName', event.target.value)} required />
+                </label>
+                <label>
+                  Username
+                  <input value={accountForm.username} onChange={(event) => updateAccountField('username', event.target.value)} required />
+                </label>
+                <label>
+                  Plan
+                  <select value={accountForm.plan} onChange={(event) => updateAccountField('plan', event.target.value)}>
+                    <option value="Unknown">Unknown</option>
+                    <option value="Free">Free</option>
+                    <option value="Pro">Pro</option>
+                  </select>
+                </label>
+                <label>
+                  Personal access token
+                  <input type="password" value={accountForm.personalAccessToken} onChange={(event) => updateAccountField('personalAccessToken', event.target.value)} required={!editingAccountId} placeholder={editingAccountId ? 'Leave unchanged' : ''} />
+                </label>
+              </div>
+              <div className="form-actions">
+                <button type="submit" disabled={busy !== null}>
+                  <Plus size={16} />
+                  {editingAccountId ? 'Save account' : 'Add account'}
                 </button>
+                {editingAccountId && (
+                  <button type="button" className="secondary" onClick={() => { setEditingAccountId(null); setAccountForm(emptyAccountForm); }}>
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </form>
+
+            <form className="editor" onSubmit={createCodespace}>
+              <div className="section-title">
+                <Cloud size={20} />
+                <h2>Create Codespace</h2>
+              </div>
+              <div className="form-grid">
+                <label>
+                  Repository owner
+                  <input value={codespaceForm.repositoryOwner} onChange={(event) => updateCodespaceField('repositoryOwner', event.target.value)} required />
+                </label>
+                <label>
+                  Repository name
+                  <input value={codespaceForm.repositoryName} onChange={(event) => updateCodespaceField('repositoryName', event.target.value)} required />
+                </label>
+                <label>
+                  Ref
+                  <input value={codespaceForm.ref} onChange={(event) => updateCodespaceField('ref', event.target.value)} placeholder="Default branch" />
+                </label>
+                <label>
+                  Geo
+                  <select value={codespaceForm.geo} onChange={(event) => updateCodespaceField('geo', event.target.value)}>
+                    <option value="UsEast">US East</option>
+                    <option value="UsWest">US West</option>
+                    <option value="EuropeWest">Europe West</option>
+                    <option value="SoutheastAsia">Southeast Asia</option>
+                  </select>
+                </label>
+                <label>
+                  Machine
+                  <input value={codespaceForm.machine} onChange={(event) => updateCodespaceField('machine', event.target.value)} placeholder="Optional" />
+                </label>
+                <label>
+                  Idle timeout
+                  <input type="number" min="5" max="240" value={codespaceForm.idleTimeoutMinutes} onChange={(event) => updateCodespaceField('idleTimeoutMinutes', Number(event.target.value))} />
+                </label>
+                <label className="wide">
+                  Display name
+                  <input value={codespaceForm.displayName} onChange={(event) => updateCodespaceField('displayName', event.target.value)} />
+                </label>
+              </div>
+              <div className="form-actions">
+                <button type="submit" disabled={busy !== null || !selectedAccountId || selectedAccount?.quotaState === 'Limited'}>
+                  <Plus size={16} />
+                  Create
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="dashboard-list">
+            <div className="section-title">
+              <Github size={20} />
+              <h2>Accounts</h2>
+            </div>
+            <div className="account-grid">
+              {accounts.length === 0 ? (
+                <div className="empty-state">No GitHub accounts yet.</div>
+              ) : (
+                accounts.map((account) => (
+                  <article className={`account-row ${account.id === selectedAccountId ? 'selected-row' : ''}`} key={account.id} onClick={() => setSelectedAccountId(account.id)}>
+                    <span>
+                      <strong>{account.displayName}</strong>
+                      <small>@{account.username}</small>
+                    </span>
+                    <span className={`badge ${account.validationStatus.toLowerCase()}`}>{account.validationStatus}</span>
+                    <span className={`badge ${account.quotaState.toLowerCase()}`}>{account.quotaState}</span>
+                    <span className="row-actions">
+                      <button title="Validate token" onClick={(event) => { event.stopPropagation(); runAction('validate-account', () => api.validateAccount(account.id)); }} disabled={busy !== null}>
+                        <ShieldCheck size={16} />
+                      </button>
+                      <button title="Sync Codespaces" onClick={(event) => { event.stopPropagation(); runAction('sync-account', () => api.syncAccount(account.id)); }} disabled={busy !== null}>
+                        <RefreshCw size={16} />
+                      </button>
+                      <button title="Edit" onClick={(event) => { event.stopPropagation(); editAccount(account); }} disabled={busy !== null}>
+                        <Pencil size={16} />
+                      </button>
+                      <button title="Delete" className="danger" onClick={(event) => { event.stopPropagation(); runAction('delete-account', () => api.deleteAccount(account.id)); }} disabled={busy !== null}>
+                        <Trash2 size={16} />
+                      </button>
+                    </span>
+                  </article>
+                ))
               )}
             </div>
-          </form>
 
-          <section className="node-list">
-            <div className="section-title">
-              <Server size={20} />
-              <h2>Nodes</h2>
+            <div className="section-title spaced">
+              <Cloud size={20} />
+              <h2>{selectedAccount ? `${selectedAccount.displayName} Codespaces` : 'Codespaces'}</h2>
+              {usage?.billingUrl && (
+                <a className="text-link" href={usage.billingUrl} target="_blank" rel="noreferrer">
+                  <ExternalLink size={15} />
+                  Billing
+                </a>
+              )}
             </div>
-            {nodes.length === 0 ? (
-              <div className="empty-state">No VPS nodes yet.</div>
-            ) : (
-              nodes.map((node) => (
-                <article className="node-card" key={node.id}>
-                  <div className="node-main">
-                    <div>
-                      <h3>{node.name}</h3>
-                      <p>{node.sshUsername}@{node.host}:{node.sshPort}</p>
-                    </div>
-                    <span className={`badge ${node.status.toLowerCase()}`}>{node.status}</span>
-                  </div>
-                  <div className="node-meta">
-                    <span>Local {node.localPort}</span>
-                    <span>HTTP {node.remoteHttpPort}</span>
-                    <span>SOCKS {node.remoteSocksPort}</span>
-                    {node.region && <span>{node.region}</span>}
-                  </div>
-                  <div className="node-actions">
-                    <button title="Bootstrap" onClick={() => runAction('bootstrap-node', () => api.bootstrapNode(node.id))} disabled={busy !== null}>
-                      <UploadCloud size={16} />
-                    </button>
-                    <button title="Probe status" onClick={() => runAction('probe-node', () => api.probeNode(node.id))} disabled={busy !== null}>
-                      <RefreshCw size={16} />
-                    </button>
-                    <button title="Start proxy" onClick={() => runAction('start-proxy', () => api.startProxy(node.id))} disabled={busy !== null || activeSession !== null}>
-                      <Play size={16} />
-                    </button>
-                    <button title="Edit" onClick={() => editNode(node)} disabled={busy !== null}>
-                      <Pencil size={16} />
-                    </button>
-                    <button title="Delete" className="danger" onClick={() => runAction('delete-node', () => api.deleteNode(node.id))} disabled={busy !== null || selectedNode?.id === node.id}>
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </article>
-              ))
-            )}
+            {usage && <section className={`notice ${usage.state === 'Unavailable' ? 'error' : ''}`}>{usage.message}</section>}
+            <CodespaceTable
+              busy={busy}
+              codespaces={codespaces}
+              selectedAccountId={selectedAccountId}
+              onDelete={(accountId, name) => runAction('delete-codespace', () => api.deleteCodespace(accountId, name))}
+              onExport={(accountId, name) => runAction('export-codespace', () => api.exportCodespace(accountId, name))}
+              onStart={(accountId, name) => runAction('start-codespace', () => api.startCodespace(accountId, name))}
+              onStop={(accountId, name) => runAction('stop-codespace', () => api.stopCodespace(accountId, name))}
+            />
           </section>
         </section>
       ) : (
@@ -346,19 +421,66 @@ export default function App() {
           onUpdateFilter={updateActivityFilter}
         />
       )}
-
-      {activeSession && (
-        <section className="active-strip">
-          <span>PID {activeSession.tunnelProcessId ?? 'unknown'}</span>
-          <span>Started {formatDate(activeSession.startedAt)}</span>
-          <span>Last activity {formatDate(activeSession.lastActivityAt)}</span>
-          <button className="danger filled" onClick={() => runAction('stop-proxy', api.stopProxy)} disabled={busy !== null}>
-            <CircleStop size={16} />
-            Stop proxy
-          </button>
-        </section>
-      )}
     </main>
+  );
+}
+
+interface CodespaceTableProps {
+  busy: string | null;
+  codespaces: CodespaceSnapshot[];
+  selectedAccountId: string | null;
+  onDelete: (accountId: string, name: string) => void;
+  onExport: (accountId: string, name: string) => void;
+  onStart: (accountId: string, name: string) => void;
+  onStop: (accountId: string, name: string) => void;
+}
+
+function CodespaceTable({ busy, codespaces, selectedAccountId, onDelete, onExport, onStart, onStop }: CodespaceTableProps) {
+  if (!selectedAccountId) {
+    return <div className="empty-state">Select or create a GitHub account.</div>;
+  }
+
+  if (codespaces.length === 0) {
+    return <div className="empty-state">No Codespaces synced for this account.</div>;
+  }
+
+  return (
+    <section className="codespace-table">
+      <div className="codespace-row codespace-header">
+        <span>Name</span>
+        <span>Repository</span>
+        <span>State</span>
+        <span>Machine</span>
+        <span>Last used</span>
+        <span>Actions</span>
+      </div>
+      {codespaces.map((codespace) => (
+        <div className="codespace-row" key={codespace.id}>
+          <span>
+            <strong>{codespace.name}</strong>
+            {codespace.webUrl && <a href={codespace.webUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} /></a>}
+          </span>
+          <span>{codespace.repositoryFullName ?? ''}</span>
+          <span className={`badge ${codespace.state.toLowerCase()}`}>{codespace.state}</span>
+          <span>{codespace.machineDisplayName ?? codespace.location ?? ''}</span>
+          <span>{codespace.lastUsedAt ? formatDate(codespace.lastUsedAt) : ''}</span>
+          <span className="row-actions">
+            <button title="Start" onClick={() => onStart(selectedAccountId, codespace.name)} disabled={busy !== null}>
+              <Play size={16} />
+            </button>
+            <button title="Stop" onClick={() => onStop(selectedAccountId, codespace.name)} disabled={busy !== null}>
+              <CircleStop size={16} />
+            </button>
+            <button title="Export" onClick={() => onExport(selectedAccountId, codespace.name)} disabled={busy !== null}>
+              <Download size={16} />
+            </button>
+            <button title="Delete" className="danger" onClick={() => confirmDelete(codespace.name) && onDelete(selectedAccountId, codespace.name)} disabled={busy !== null}>
+              <Trash2 size={16} />
+            </button>
+          </span>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -402,14 +524,14 @@ function ActivityPanel({
         <div className="status-tile">
           <Terminal size={20} />
           <div>
-            <span>Command failures</span>
+            <span>GitHub API failures</span>
             <strong>{summary ? `${summary.commandFailureCount} failures` : 'Loading'}</strong>
           </div>
         </div>
         <div className="status-tile">
           <Activity size={20} />
           <div>
-            <span>Average command time</span>
+            <span>Average API time</span>
             <strong>{summary?.averageCommandDurationMs ? `${Math.round(summary.averageCommandDurationMs)} ms` : 'No samples'}</strong>
           </div>
         </div>
@@ -529,15 +651,9 @@ function ActivityPanel({
                 Copy correlation ID
               </button>
             )}
-            {selectedEvent.standardOutputSnippet && (
-              <pre>{selectedEvent.standardOutputSnippet}</pre>
-            )}
-            {selectedEvent.standardErrorSnippet && (
-              <pre className="stderr">{selectedEvent.standardErrorSnippet}</pre>
-            )}
-            {selectedEvent.detailsJson && (
-              <pre>{selectedEvent.detailsJson}</pre>
-            )}
+            {selectedEvent.standardOutputSnippet && <pre>{selectedEvent.standardOutputSnippet}</pre>}
+            {selectedEvent.standardErrorSnippet && <pre className="stderr">{selectedEvent.standardErrorSnippet}</pre>}
+            {selectedEvent.detailsJson && <pre>{selectedEvent.detailsJson}</pre>}
           </div>
         </div>
       )}
@@ -545,34 +661,40 @@ function ActivityPanel({
   );
 }
 
+function confirmDelete(name: string) {
+  return window.confirm(`Delete Codespace "${name}"? This action is irreversible.`);
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Unexpected error';
 }
 
 function formatResult(label: string, result: unknown) {
-  if (isRuntimeResult(result)) {
+  if (isLifecycleResult(result)) {
     return result.message;
   }
 
   return label.replaceAll('-', ' ');
 }
 
-function isRuntimeResult(result: unknown): result is RuntimeResult {
+function isLifecycleResult(result: unknown): result is GitHubLifecycleResult {
   return typeof result === 'object' && result !== null && 'message' in result && 'succeeded' in result;
 }
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: '2-digit',
     hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
+    minute: '2-digit'
   }).format(new Date(value));
 }
 
-function idleText(lastActivityAt: string) {
-  const lastActivity = new Date(lastActivityAt).getTime();
-  const shutdownAt = lastActivity + idleMinutes * 60 * 1000;
-  const remainingMs = Math.max(0, shutdownAt - Date.now());
-  const remainingMinutes = Math.ceil(remainingMs / 60000);
-  return remainingMinutes <= 0 ? 'Stopping soon' : `${remainingMinutes}m remaining`;
+function formatUsage(usage: GitHubUsage) {
+  if (usage.quantity == null) {
+    return usage.state;
+  }
+
+  const unit = usage.unitType ? ` ${usage.unitType}` : '';
+  return `${usage.quantity}${unit}`;
 }

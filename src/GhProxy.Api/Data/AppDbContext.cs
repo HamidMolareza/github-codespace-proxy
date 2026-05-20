@@ -9,6 +9,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<ProxySession> ProxySessions => Set<ProxySession>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<OperationalEvent> OperationalEvents => Set<OperationalEvent>();
+    public DbSet<GitHubAccount> GitHubAccounts => Set<GitHubAccount>();
+    public DbSet<CodespaceSnapshot> CodespaceSnapshots => Set<CodespaceSnapshot>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -60,6 +62,37 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(x => x.Timestamp);
             entity.HasIndex(x => x.CorrelationId);
             entity.HasIndex(x => x.NodeId);
+        });
+
+        modelBuilder.Entity<GitHubAccount>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.DisplayName).HasMaxLength(160).IsRequired();
+            entity.Property(x => x.Username).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.ProtectedPersonalAccessToken).HasMaxLength(4000).IsRequired();
+            entity.Property(x => x.Plan).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.ValidationStatus).HasConversion<string>().HasMaxLength(32);
+            entity.Property(x => x.QuotaState).HasConversion<string>().HasMaxLength(32);
+            entity.Property(x => x.ValidationMessage).HasMaxLength(2000);
+            entity.Property(x => x.LastError).HasMaxLength(2000);
+            entity.HasIndex(x => x.Username).IsUnique();
+        });
+
+        modelBuilder.Entity<CodespaceSnapshot>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.State).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.RepositoryFullName).HasMaxLength(260);
+            entity.Property(x => x.MachineDisplayName).HasMaxLength(160);
+            entity.Property(x => x.Location).HasMaxLength(120);
+            entity.Property(x => x.WebUrl).HasMaxLength(1000);
+            entity.Property(x => x.BillableOwner).HasMaxLength(120);
+            entity.HasIndex(x => new { x.AccountId, x.Name }).IsUnique();
+            entity.HasOne(x => x.Account)
+                .WithMany(x => x.Codespaces)
+                .HasForeignKey(x => x.AccountId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

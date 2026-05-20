@@ -7,7 +7,7 @@ namespace GhProxy.Tests;
 public sealed class DatabaseSchemaInitializerTests
 {
     [Fact]
-    public async Task InitializeAsync_CreatesOperationalEventsTableIdempotently()
+    public async Task InitializeAsync_CreatesOperationalTablesIdempotently()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
         try
@@ -19,9 +19,14 @@ public sealed class DatabaseSchemaInitializerTests
             await initializer.InitializeAsync(CancellationToken.None);
 
             var tables = await db.Database.SqlQueryRaw<string>(
-                "SELECT name AS Value FROM sqlite_master WHERE type = 'table' AND name = 'OperationalEvents'")
+                """
+                SELECT name AS Value
+                FROM sqlite_master
+                WHERE type = 'table' AND name IN ('OperationalEvents', 'GitHubAccounts', 'CodespaceSnapshots')
+                ORDER BY name
+                """)
                 .ToListAsync();
-            Assert.Single(tables);
+            Assert.Equal(["CodespaceSnapshots", "GitHubAccounts", "OperationalEvents"], tables);
         }
         finally
         {
