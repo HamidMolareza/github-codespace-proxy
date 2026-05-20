@@ -140,7 +140,8 @@ export default function App() {
       const result = await action();
       setMessage(formatResult(label, result));
       await loadAccounts();
-      await loadCodespaces(selectedAccountId);
+      const accountId = lifecycleAccountId(result) ?? selectedAccountId;
+      await loadCodespaces(accountId);
       await loadActivity();
     } catch (err) {
       setError(errorMessage(err));
@@ -679,6 +680,10 @@ function formatResult(label: string, result: unknown) {
 
 function isLifecycleResult(result: unknown): result is GitHubLifecycleResult {
   return typeof result === 'object' && result !== null && 'message' in result && 'succeeded' in result;
+}
+
+function lifecycleAccountId(result: unknown) {
+  return isLifecycleResult(result) ? result.codespace?.accountId ?? null : null;
 }
 
 function formatDate(value: string) {

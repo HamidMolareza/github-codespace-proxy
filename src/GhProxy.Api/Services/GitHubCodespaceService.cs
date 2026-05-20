@@ -159,6 +159,8 @@ public sealed class GitHubCodespaceService(
 
         var remote = await action(secrets.Unprotect(account.ProtectedPersonalAccessToken), codespaceName, cancellationToken);
         var snapshot = await UpsertRemoteAsync(account, remote, cancellationToken);
+        var synced = await SyncAsync(accountId, cancellationToken);
+        snapshot = synced.FirstOrDefault(x => string.Equals(x.Name, snapshot.Name, StringComparison.OrdinalIgnoreCase)) ?? snapshot;
         await audit.WriteAsync(eventType, $"{verb} Codespace {snapshot.Name}.", account.Id, cancellationToken);
         return snapshot;
     }

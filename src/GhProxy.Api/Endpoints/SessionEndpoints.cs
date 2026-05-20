@@ -34,10 +34,11 @@ public static class SessionEndpoints
         {
             var sessions = await db.ProxySessions
                 .Include(x => x.Node)
+                .ToListAsync(ct);
+            return sessions
                 .OrderByDescending(x => x.StartedAt)
                 .Take(50)
-                .ToListAsync(ct);
-            return sessions.Select(ToResponse);
+                .Select(ToResponse);
         });
 
         return app;

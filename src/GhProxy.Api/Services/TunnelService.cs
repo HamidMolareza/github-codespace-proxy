@@ -17,10 +17,10 @@ public sealed class TunnelService(
         var node = await db.VpsNodes.FirstOrDefaultAsync(x => x.Id == nodeId, cancellationToken)
             ?? throw new InvalidOperationException("VPS node was not found.");
 
-        var activeSession = await db.ProxySessions
+        var activeSessions = await db.ProxySessions
             .Where(x => x.Status == ProxySessionStatus.Running || x.Status == ProxySessionStatus.Starting)
-            .OrderByDescending(x => x.StartedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        var activeSession = activeSessions.OrderByDescending(x => x.StartedAt).FirstOrDefault();
         if (activeSession is not null)
         {
             await events.WriteAsync(new OperationalEventWrite(
@@ -89,11 +89,11 @@ public sealed class TunnelService(
 
     public async Task<ProxySession?> StopActiveAsync(CancellationToken cancellationToken)
     {
-        var session = await db.ProxySessions
+        var sessions = await db.ProxySessions
             .Include(x => x.Node)
             .Where(x => x.Status == ProxySessionStatus.Running || x.Status == ProxySessionStatus.Starting || x.Status == ProxySessionStatus.Error)
-            .OrderByDescending(x => x.StartedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        var session = sessions.OrderByDescending(x => x.StartedAt).FirstOrDefault();
 
         if (session is null)
         {
@@ -159,11 +159,12 @@ public sealed class TunnelService(
 
     public async Task<ProxySession?> GetActiveAsync(CancellationToken cancellationToken)
     {
-        return await db.ProxySessions
+        var sessions = await db.ProxySessions
             .Include(x => x.Node)
             .Where(x => x.Status == ProxySessionStatus.Running || x.Status == ProxySessionStatus.Starting)
-            .OrderByDescending(x => x.StartedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+
+        return sessions.OrderByDescending(x => x.StartedAt).FirstOrDefault();
     }
 
     public async Task MarkActivityAsync(ProxySession session, CancellationToken cancellationToken)
