@@ -11,7 +11,8 @@ Build a local admin panel using ASP.NET Core/.NET 10 and React/Vite. The app man
 3. Add persistence and VPS node CRUD.
 4. Add SSH, Docker Compose, and tunnel control services.
 5. Build the React admin panel.
-6. Validate and document operations.
+6. Add structured local observability, runtime diagnostics, and Activity UI.
+7. Validate and document operations.
 
 ## Acceptance Criteria
 
@@ -20,4 +21,5 @@ Build a local admin panel using ASP.NET Core/.NET 10 and React/Vite. The app man
 - A user can start and stop the local proxy tunnel from the panel.
 - The app stops the active tunnel and remote proxy after the configured idle window.
 - Secrets are redacted from logs and never committed.
-
+- The Activity tab shows recent events, command failures, diagnostics, and correlation IDs.
+- Operational events are persisted in SQLite and optional JSONL files with bounded redacted output.

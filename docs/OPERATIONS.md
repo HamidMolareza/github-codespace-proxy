@@ -45,6 +45,29 @@ The background worker checks active local TCP connections on the tunnel port wit
 
 Configuration lives under `ProxyRuntime` in `src/GhProxy.Api/appsettings.json`.
 
+## Observability
+
+The Activity tab shows recent operational events, command failures, runtime diagnostics, and redacted command output snippets. Use it first when a bootstrap, SSH/SCP copy, Docker Compose action, tunnel start, or idle shutdown does not behave as expected.
+
+Each API request receives an `X-Correlation-ID` response header. If an API call fails, copy the correlation ID from the UI or browser network panel and filter Activity by that value.
+
+The backend stores events in SQLite table `OperationalEvents` and writes local JSONL files when enabled:
+
+```json
+"Observability": {
+  "LogDirectory": "data/logs",
+  "RetentionDays": 14,
+  "MaxOutputChars": 4000,
+  "EnableJsonlFile": true
+}
+```
+
+JSONL retention only deletes files matching `operational-*.jsonl` after `RetentionDays`. The retention worker does not delete the SQLite event table.
+
+Runtime diagnostics check local tool availability for `ssh`, `scp`, `autossh`, and `ss`. A missing `autossh` means the app can still manage node records, but it cannot keep the local tunnel alive.
+
+Secrets are redacted before command output, command display strings, details JSON, and error messages are persisted. Do not paste raw proxy passwords or PAT-like tokens into node notes or shell commands.
+
 ## Git Commands In This Workspace
 
 The sandbox has a read-only `.git` mount, so this implementation stores repository metadata under `.repo/git`.
@@ -57,4 +80,3 @@ git --git-dir=.repo/git --work-tree=. log --oneline
 ```
 
 On a normal filesystem, this can be converted to a standard `.git` repository later.
-

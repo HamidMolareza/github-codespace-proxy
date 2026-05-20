@@ -10,6 +10,7 @@ The application runs on a trusted workstation and controls VPS nodes over SSH. I
 - Bootstrap proxy runtime over SSH.
 - Start and stop a local proxy tunnel.
 - Track activity and shut down idle sessions.
+- Inspect operational activity, command failures, diagnostics, and correlation IDs.
 
 GitHub Codespaces account rotation is intentionally out of scope. Codespaces may be monitored or shut down safely, but this project does not automate quota bypass or multi-account rotation.
 
@@ -40,3 +41,13 @@ cd frontend && npm run lint && npm run build
 ```
 
 In this sandbox, the .NET test runner needs permission to open its local socket transport.
+
+## Observability
+
+The API writes structured operational events to SQLite and, by default, JSONL files under `data/logs/`. The frontend Activity tab reads:
+
+- `GET /api/activity`
+- `GET /api/activity/summary`
+- `GET /api/diagnostics/runtime`
+
+Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. Command output is bounded and redacted before it is stored or returned.
