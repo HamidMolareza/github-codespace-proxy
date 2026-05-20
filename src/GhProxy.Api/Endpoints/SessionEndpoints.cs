@@ -15,7 +15,7 @@ public static class SessionEndpoints
         group.MapGet("/active", async (TunnelService tunnelService, CancellationToken ct) =>
         {
             var session = await tunnelService.GetActiveAsync(ct);
-            return session is null ? Results.Ok(null) : Results.Ok(ToResponse(session));
+            return session is null ? Results.Text("null", "application/json") : Results.Ok(ToResponse(session));
         });
 
         group.MapPost("/start/{nodeId:guid}", async (Guid nodeId, TunnelService tunnelService, CancellationToken ct) =>
@@ -27,7 +27,7 @@ public static class SessionEndpoints
         group.MapPost("/stop", async (TunnelService tunnelService, CancellationToken ct) =>
         {
             var session = await tunnelService.StopActiveAsync(ct);
-            return session is null ? Results.Ok(null) : Results.Ok(ToResponse(session));
+            return session is null ? Results.Text("null", "application/json") : Results.Ok(ToResponse(session));
         });
 
         group.MapGet("/history", async (AppDbContext db, CancellationToken ct) =>

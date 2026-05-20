@@ -199,8 +199,8 @@ public sealed class GitHubCodespaceServiceTests
         public Task DeleteCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+        public Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
+            Task.FromResult(new GitHubCodespaceExportRemote("export-id", "pending", "https://api.github.com/export", "https://github.com/export", null));
 
         public Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken) =>
             Task.FromResult(new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 10, "minutes", 0, "https://github.com/settings/billing/usage"));

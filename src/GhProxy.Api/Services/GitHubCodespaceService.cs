@@ -142,11 +142,12 @@ public sealed class GitHubCodespaceService(
         await audit.WriteAsync("github.codespaces.delete", $"Deleted Codespace {codespaceName}.", account.Id, cancellationToken);
     }
 
-    public async Task ExportAsync(Guid accountId, string codespaceName, CancellationToken cancellationToken)
+    public async Task<GitHubCodespaceExportRemote> ExportAsync(Guid accountId, string codespaceName, CancellationToken cancellationToken)
     {
         var account = await GetAccountAsync(accountId, cancellationToken);
-        await github.ExportCodespaceAsync(secrets.Unprotect(account.ProtectedPersonalAccessToken), codespaceName, cancellationToken);
+        var export = await github.ExportCodespaceAsync(secrets.Unprotect(account.ProtectedPersonalAccessToken), codespaceName, cancellationToken);
         await audit.WriteAsync("github.codespaces.export", $"Requested export for Codespace {codespaceName}.", account.Id, cancellationToken);
+        return export;
     }
 
     private async Task<CodespaceSnapshot> RunLifecycleAsync(

@@ -54,4 +54,15 @@ public sealed record GitHubUsageResponse(
     decimal? NetAmount,
     string BillingUrl);
 
-public sealed record GitHubLifecycleResultResponse(bool Succeeded, string Message, CodespaceSnapshotResponse? Codespace);
+public sealed record GitHubCodespaceExportResponse(
+    string? Id,
+    string? State,
+    string? ExportUrl,
+    string? HtmlUrl,
+    DateTimeOffset? CompletedAt);
+
+public sealed record GitHubLifecycleResultResponse(
+    bool Succeeded,
+    string Message,
+    CodespaceSnapshotResponse? Codespace,
+    GitHubCodespaceExportResponse? Export = null);

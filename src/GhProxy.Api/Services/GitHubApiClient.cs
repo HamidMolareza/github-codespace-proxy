@@ -17,6 +17,13 @@ public sealed class GitHubApiException(HttpStatusCode statusCode, string message
 
 public sealed record GitHubUserProfile(string Login);
 
+public sealed record GitHubCodespaceExportRemote(
+    string? Id,
+    string? State,
+    string? ExportUrl,
+    string? HtmlUrl,
+    DateTimeOffset? CompletedAt);
+
 public sealed record GitHubCodespaceRemote(
     string Name,
     string State,
@@ -37,7 +44,7 @@ public interface IGitHubApiClient
     Task<GitHubCodespaceRemote> StartCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
     Task<GitHubCodespaceRemote> StopCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
     Task DeleteCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
-    Task ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
+    Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
     Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken);
 }
 
@@ -123,9 +130,10 @@ public sealed class GitHubApiClient(
         await SendNoContentAsync(token, HttpMethod.Delete, $"user/codespaces/{Uri.EscapeDataString(codespaceName)}", "github.codespaces.delete", cancellationToken);
     }
 
-    public async Task ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken)
+    public async Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken)
     {
-        await SendNoContentAsync(token, HttpMethod.Post, $"user/codespaces/{Uri.EscapeDataString(codespaceName)}/exports", "github.codespaces.export", cancellationToken);
+        using var document = await SendAsync(token, HttpMethod.Post, $"user/codespaces/{Uri.EscapeDataString(codespaceName)}/exports", null, "github.codespaces.export", cancellationToken);
+        return ToExport(document.RootElement);
     }
 
     public async Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken)
@@ -152,7 +160,7 @@ public sealed class GitHubApiClient(
                         continue;
                     }
 
-                    quantity = (quantity ?? 0) + (GetDecimal(item, "quantity") ?? 0);
+                    quantity = (quantity ?? 0) + (GetDecimal(item, "netQuantity") ?? GetDecimal(item, "grossQuantity") ?? GetDecimal(item, "quantity") ?? 0);
                     netAmount = (netAmount ?? 0) + (GetDecimal(item, "netAmount") ?? GetDecimal(item, "net_amount") ?? 0);
                     unitType ??= GetString(item, "unitType") ?? GetString(item, "unit_type");
                 }
@@ -291,6 +299,14 @@ public sealed class GitHubApiClient(
             GetDate(element, "updated_at"),
             GetDate(element, "last_used_at"));
     }
+
+    private static GitHubCodespaceExportRemote ToExport(JsonElement element) =>
+        new(
+            GetString(element, "id"),
+            GetString(element, "state"),
+            GetString(element, "export_url"),
+            GetString(element, "html_url"),
+            GetDate(element, "completed_at"));
 
     private static void AddIfSet(Dictionary<string, object?> payload, string key, string? value)
     {

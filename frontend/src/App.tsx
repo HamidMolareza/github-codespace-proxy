@@ -133,12 +133,13 @@ export default function App() {
   }, [selectedAccountId]);
 
   const loadLocalProxy = useCallback(async () => {
-    const [nextProfiles, nextSession] = await Promise.all([
-      api.localProxyProfiles(),
-      api.localProxySession()
-    ]);
+    const nextProfiles = await api.localProxyProfiles();
     setProfiles(nextProfiles);
-    setLocalSession(nextSession);
+    try {
+      setLocalSession((await api.localProxySession()) ?? null);
+    } catch {
+      setLocalSession(null);
+    }
   }, []);
 
   const loadActivity = useCallback(async (filters = activityFilters) => {

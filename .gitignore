@@ -15,6 +15,7 @@ TestResults/
 *.db-shm
 *.db-wal
 logs/
+src/GhProxy.Api/data/
 .env
 .env.*
 !.env.example

@@ -116,7 +116,10 @@ public static class LocalProxyEndpoints
         });
 
         group.MapGet("/session", async (LocalProxyRuntimeService runtime, CancellationToken ct) =>
-            Results.Ok(ToResponse(await runtime.GetActiveAsync(ct))));
+        {
+            var session = ToResponse(await runtime.GetActiveAsync(ct));
+            return session is null ? Results.Text("null", "application/json") : Results.Ok(session);
+        });
 
         group.MapPost("/profiles/{id:guid}/start", async (Guid id, LocalProxyRuntimeService runtime, CancellationToken ct) =>
         {

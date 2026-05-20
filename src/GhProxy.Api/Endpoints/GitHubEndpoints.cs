@@ -144,8 +144,11 @@ public static class GitHubEndpoints
 
         accounts.MapPost("/{id:guid}/codespaces/{name}/export", async (Guid id, string name, GitHubCodespaceService service, CancellationToken ct) =>
         {
-            await service.ExportAsync(id, name, ct);
-            return Results.Ok(new GitHubLifecycleResultResponse(true, "Codespace export requested.", null));
+            var export = await service.ExportAsync(id, name, ct);
+            var message = string.IsNullOrWhiteSpace(export.Id)
+                ? "Codespace export requested."
+                : $"Codespace export requested. Export {export.Id} is {export.State ?? "pending"}.";
+            return Results.Ok(new GitHubLifecycleResultResponse(true, message, null, ToResponse(export)));
         });
 
         accounts.MapDelete("/{id:guid}/codespaces/{name}", async (Guid id, string name, GitHubCodespaceService service, CancellationToken ct) =>
@@ -187,6 +190,14 @@ public static class GitHubEndpoints
             codespace.UpdatedAt,
             codespace.LastUsedAt,
             codespace.LastSyncedAt);
+
+    private static GitHubCodespaceExportResponse ToResponse(GitHubCodespaceExportRemote export) =>
+        new(
+            export.Id,
+            export.State,
+            export.ExportUrl,
+            export.HtmlUrl,
+            export.CompletedAt);
 
     private static object? ValidateAccount(GitHubAccountRequest request, bool requireToken)
     {

@@ -115,6 +115,15 @@ export interface GitHubLifecycleResult {
   succeeded: boolean;
   message: string;
   codespace?: CodespaceSnapshot | null;
+  export?: GitHubCodespaceExport | null;
+}
+
+export interface GitHubCodespaceExport {
+  id?: string | null;
+  state?: string | null;
+  exportUrl?: string | null;
+  htmlUrl?: string | null;
+  completedAt?: string | null;
 }
 
 export interface OperationalEvent {

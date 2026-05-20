@@ -124,7 +124,7 @@ public sealed class LocalProxyRuntimeService(
             var probe = await ProbeActiveAsync(cancellationToken);
             return probe.Succeeded
                 ? LocalProxyStartResult.Ok("Local proxy is ready.", probe.Session)
-                : LocalProxyStartResult.Fail(probe.Message, probe.Session);
+                : LocalProxyStartResult.Ok($"Local proxy is listening, but probe failed: {probe.Message}", probe.Session);
         }
         finally
         {
