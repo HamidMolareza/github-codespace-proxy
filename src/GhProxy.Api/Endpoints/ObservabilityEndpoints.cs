@@ -23,7 +23,7 @@ public static class ObservabilityEndpoints
             AppDbContext db,
             CancellationToken ct) =>
         {
-            var query = db.OperationalEvents.AsNoTracking();
+            IEnumerable<OperationalEvent> query = await db.OperationalEvents.AsNoTracking().ToListAsync(ct);
 
             if (nodeId is not null)
             {
@@ -61,11 +61,11 @@ public static class ObservabilityEndpoints
             }
 
             var take = Math.Clamp(limit ?? 100, 1, 500);
-            var events = await query
+            var events = query
                 .OrderByDescending(x => x.Timestamp)
                 .Take(take)
                 .Select(x => ToResponse(x))
-                .ToListAsync(ct);
+                .ToList();
 
             return Results.Ok(events);
         });
@@ -73,10 +73,9 @@ public static class ObservabilityEndpoints
         group.MapGet("/activity/summary", async (AppDbContext db, CancellationToken ct) =>
         {
             var since = DateTimeOffset.UtcNow.AddHours(-24);
-            var recent = await db.OperationalEvents
-                .AsNoTracking()
+            var recent = (await db.OperationalEvents.AsNoTracking().ToListAsync(ct))
                 .Where(x => x.Timestamp >= since)
-                .ToListAsync(ct);
+                .ToList();
 
             var lastError = recent
                 .Where(x => x.Severity == OperationalEventSeverity.Error)
@@ -92,7 +91,7 @@ public static class ObservabilityEndpoints
                 recent.Count,
                 recent.Count(x => x.Severity == OperationalEventSeverity.Error),
                 recent.Count(x => x.Severity == OperationalEventSeverity.Warning),
-                recent.Count(x => x.CommandKind != null && (x.ExitCode != 0 || x.TimedOut)),
+                recent.Count(x => x.CommandKind != null && (x.TimedOut || (x.ExitCode.HasValue && x.ExitCode.Value != 0))),
                 commandDurations.Count == 0 ? null : commandDurations.Average(),
                 lastError is null ? null : ToResponse(lastError)));
         });
@@ -103,7 +102,7 @@ public static class ObservabilityEndpoints
             var tools = new List<ToolDiagnosticResponse>();
             foreach (var tool in new[] { "ssh", "scp", "autossh", "ss" })
             {
-                var result = await runner.RunAsync(new CommandSpec("sh", ["-lc", $"command -v {tool}"], TimeSpan.FromSeconds(3), $"diagnostic.{tool}"), ct);
+                var result = await runner.RunAsync(new CommandSpec("bash", ["-lc", $"command -v {tool}"], TimeSpan.FromSeconds(3), $"diagnostic.{tool}"), ct);
                 tools.Add(new ToolDiagnosticResponse(
                     tool,
                     result.Succeeded && !string.IsNullOrWhiteSpace(result.StandardOutput),
