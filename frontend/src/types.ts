@@ -53,3 +53,49 @@ export interface RuntimeResult {
   message: string;
 }
 
+export interface OperationalEvent {
+  id: string;
+  timestamp: string;
+  severity: 'Debug' | 'Information' | 'Warning' | 'Error';
+  eventType: string;
+  message: string;
+  nodeId?: string | null;
+  sessionId?: string | null;
+  correlationId?: string | null;
+  commandKind?: string | null;
+  commandDisplay?: string | null;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  timedOut: boolean;
+  standardOutputSnippet?: string | null;
+  standardErrorSnippet?: string | null;
+  detailsJson?: string | null;
+}
+
+export interface ActivitySummary {
+  recentCount: number;
+  errorCount: number;
+  warningCount: number;
+  commandFailureCount: number;
+  averageCommandDurationMs?: number | null;
+  lastError?: OperationalEvent | null;
+}
+
+export interface RuntimeDiagnostics {
+  databaseAvailable: boolean;
+  tools: ToolDiagnostic[];
+}
+
+export interface ToolDiagnostic {
+  name: string;
+  available: boolean;
+  message: string;
+}
+
+export interface ActivityFilters {
+  severity: string;
+  eventType: string;
+  correlationId: string;
+  search: string;
+  limit: number;
+}
