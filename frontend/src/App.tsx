@@ -363,8 +363,8 @@ export default function App() {
                       <strong>{account.displayName}</strong>
                       <small>@{account.username}</small>
                     </span>
-                    <span className={`badge ${account.validationStatus.toLowerCase()}`}>{account.validationStatus}</span>
-                    <span className={`badge ${account.quotaState.toLowerCase()}`}>{account.quotaState}</span>
+                    <span className={`badge ${badgeClass(account.validationStatus)}`}>{account.validationStatus}</span>
+                    <span className={`badge ${badgeClass(account.quotaState)}`}>{account.quotaState}</span>
                     <span className="row-actions">
                       <button title="Validate token" onClick={(event) => { event.stopPropagation(); runAction('validate-account', () => api.validateAccount(account.id)); }} disabled={busy !== null}>
                         <ShieldCheck size={16} />
@@ -461,7 +461,7 @@ function CodespaceTable({ busy, codespaces, selectedAccountId, onDelete, onExpor
             {codespace.webUrl && <a href={codespace.webUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} /></a>}
           </span>
           <span>{codespace.repositoryFullName ?? ''}</span>
-          <span className={`badge ${codespace.state.toLowerCase()}`}>{codespace.state}</span>
+          <span className={`badge ${badgeClass(codespace.state)}`}>{codespace.state}</span>
           <span>{codespace.machineDisplayName ?? codespace.location ?? ''}</span>
           <span>{codespace.lastUsedAt ? formatDate(codespace.lastUsedAt) : ''}</span>
           <span className="row-actions">
@@ -615,7 +615,7 @@ function ActivityPanel({
           events.map((event) => (
             <button className="event-row" key={event.id} type="button" onClick={() => onSelectEvent(event)}>
               <span>{formatDate(event.timestamp)}</span>
-              <span className={`badge ${event.severity.toLowerCase()}`}>{event.severity}</span>
+              <span className={`badge ${badgeClass(event.severity)}`}>{event.severity}</span>
               <span>{event.eventType}</span>
               <span>{event.message}</span>
               <span>{event.durationMs ? `${event.durationMs} ms` : ''}</span>
@@ -697,4 +697,8 @@ function formatUsage(usage: GitHubUsage) {
 
   const unit = usage.unitType ? ` ${usage.unitType}` : '';
   return `${usage.quantity}${unit}`;
+}
+
+function badgeClass(value: string | number | null | undefined) {
+  return String(value ?? 'unknown').toLowerCase();
 }

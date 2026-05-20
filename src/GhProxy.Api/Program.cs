@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using GhProxy.Api.Data;
 using GhProxy.Api.Endpoints;
 using GhProxy.Api.Services;
@@ -10,6 +11,10 @@ Directory.CreateDirectory(dataPath);
 Directory.CreateDirectory(Path.Combine(dataPath, "keys"));
 
 builder.Services.AddOpenApi();
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 builder.Services.Configure<ProxyRuntimeOptions>(builder.Configuration.GetSection("ProxyRuntime"));
 builder.Services.Configure<ObservabilityOptions>(builder.Configuration.GetSection("Observability"));
 builder.Services.Configure<GitHubOptions>(builder.Configuration.GetSection("GitHub"));
