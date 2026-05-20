@@ -1,0 +1,14 @@
+.repo/
+.git/
+**/bin/
+**/obj/
+frontend/dist/
+frontend/node_modules/
+data/
+logs/
+*.db
+*.db-shm
+*.db-wal
+.env
+.idea/
+.vscode/

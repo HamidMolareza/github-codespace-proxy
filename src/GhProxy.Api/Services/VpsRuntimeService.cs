@@ -126,25 +126,36 @@ public sealed class VpsRuntimeService(
 
     public CommandSpec TunnelCommand(VpsNode node, Guid? sessionId = null)
     {
-        return new CommandSpec("autossh",
-            [
-                "-M", "0",
+        var commandName = string.Equals(_options.TunnelCommandName, "ssh", StringComparison.OrdinalIgnoreCase)
+            ? "ssh"
+            : "autossh";
+        var args = new List<string>();
+        if (commandName == "autossh")
+        {
+            args.AddRange(["-M", "0"]);
+        }
+
+        args.AddRange([
                 "-N",
                 "-L", $"127.0.0.1:{node.LocalPort}:127.0.0.1:{node.RemoteHttpPort}",
                 "-o", "ExitOnForwardFailure=yes",
                 "-o", "ServerAliveInterval=10",
                 "-o", "ServerAliveCountMax=3",
                 "-o", "TCPKeepAlive=yes",
+                "-o", $"UserKnownHostsFile={KnownHostsPath()}",
                 "-i", ExpandHome(node.SshKeyPath),
                 "-p", node.SshPort.ToString(),
                 $"{node.SshUsername}@{node.Host}"
-            ],
-            Kind: "autossh.tunnel",
+            ]);
+
+        return new CommandSpec(commandName,
+            args,
+            Kind: $"{commandName}.tunnel",
             NodeId: node.Id,
             SessionId: sessionId);
     }
 
-    private static CommandSpec Ssh(VpsNode node, string remoteCommand, string kind)
+    private CommandSpec Ssh(VpsNode node, string remoteCommand, string kind)
     {
         return new CommandSpec("ssh",
             [
@@ -152,6 +163,7 @@ public sealed class VpsRuntimeService(
                 "-p", node.SshPort.ToString(),
                 "-o", "BatchMode=yes",
                 "-o", "StrictHostKeyChecking=accept-new",
+                "-o", $"UserKnownHostsFile={KnownHostsPath()}",
                 $"{node.SshUsername}@{node.Host}",
                 remoteCommand
             ],
@@ -168,6 +180,7 @@ public sealed class VpsRuntimeService(
                 "-P", node.SshPort.ToString(),
                 "-o", "BatchMode=yes",
                 "-o", "StrictHostKeyChecking=accept-new",
+                "-o", $"UserKnownHostsFile={KnownHostsPath()}",
                 composePath,
                 configPath,
                 $"{node.SshUsername}@{node.Host}:{_options.RemoteDirectory}/"
@@ -187,6 +200,18 @@ public sealed class VpsRuntimeService(
         if (path.StartsWith("~/", StringComparison.Ordinal))
         {
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..]);
+        }
+
+        return path;
+    }
+
+    private string KnownHostsPath()
+    {
+        var path = ExpandHome(_options.KnownHostsPath);
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
         }
 
         return path;

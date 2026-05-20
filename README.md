@@ -32,12 +32,41 @@ npm run dev
 
 Open `http://127.0.0.1:5173`.
 
+## Run With Docker Compose
+
+Build and start both services:
+
+```bash
+docker compose up --build -d
+```
+
+Open `http://127.0.0.1:5173`. The frontend container serves the built React app and proxies `/api/*` to the backend container.
+
+The backend API is also published directly at `http://127.0.0.1:5080`.
+
+Check the stack:
+
+```bash
+docker compose ps
+curl http://127.0.0.1:5080/api/health
+curl http://127.0.0.1:5080/api/diagnostics/runtime
+```
+
+Stop it:
+
+```bash
+docker compose down
+```
+
+Data is stored in the named Docker volume `gh-proxy_gh-proxy-data`. The Compose file mounts `${HOME}/.ssh` read-only at `/root/.ssh` so node SSH key paths can use `/root/.ssh/<key-name>` inside the container. The Docker profile uses `ssh` for tunnels; local workstation runs still default to `autossh`.
+
 ## Validate
 
 ```bash
 dotnet build src/GhProxy.Api/GhProxy.Api.csproj --no-restore
 dotnet test tests/GhProxy.Tests/GhProxy.Tests.csproj --no-build
 cd frontend && npm run lint && npm run build
+docker compose config
 ```
 
 In this sandbox, the .NET test runner needs permission to open its local socket transport.

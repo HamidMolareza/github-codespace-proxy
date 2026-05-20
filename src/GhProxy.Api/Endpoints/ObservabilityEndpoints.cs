@@ -3,6 +3,7 @@ using GhProxy.Api.Data;
 using GhProxy.Api.Domain;
 using GhProxy.Api.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace GhProxy.Api.Endpoints;
 
@@ -96,11 +97,11 @@ public static class ObservabilityEndpoints
                 lastError is null ? null : ToResponse(lastError)));
         });
 
-        group.MapGet("/diagnostics/runtime", async (AppDbContext db, ICommandRunner runner, CancellationToken ct) =>
+        group.MapGet("/diagnostics/runtime", async (AppDbContext db, ICommandRunner runner, IOptions<ProxyRuntimeOptions> options, CancellationToken ct) =>
         {
             var databaseAvailable = await db.Database.CanConnectAsync(ct);
             var tools = new List<ToolDiagnosticResponse>();
-            foreach (var tool in new[] { "ssh", "scp", "autossh", "ss" })
+            foreach (var tool in new[] { "ssh", "scp", options.Value.TunnelCommandName, "ss" }.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 var result = await runner.RunAsync(new CommandSpec("bash", ["-lc", $"command -v {tool}"], TimeSpan.FromSeconds(3), $"diagnostic.{tool}"), ct);
                 tools.Add(new ToolDiagnosticResponse(

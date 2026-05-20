@@ -1,0 +1,47 @@
+name: gh-proxy
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: src/GhProxy.Api/Dockerfile
+    image: gh-proxy-api:local
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Default: Data Source=/app/data/gh-proxy.db
+      Observability__LogDirectory: /app/data/logs
+      ProxyRuntime__KnownHostsPath: /app/data/known_hosts
+      ProxyRuntime__TunnelCommandName: ssh
+    ports:
+      - "5080:8080"
+    volumes:
+      - gh-proxy-data:/app/data
+      - ${HOME}/.ssh:/root/.ssh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: gh-proxy-frontend:local
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  gh-proxy-data:

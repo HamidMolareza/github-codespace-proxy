@@ -18,6 +18,53 @@ npm run dev
 
 The frontend proxies `/api/*` to `http://127.0.0.1:5080`.
 
+## Docker Compose
+
+The repository includes `compose.yml` for running both services:
+
+- `backend`: ASP.NET Core API on container port `8080`, published as `127.0.0.1:5080`.
+- `frontend`: Node serving the built React app on container port `8080`, published as `127.0.0.1:5173`.
+- `gh-proxy-data`: named volume for SQLite, JSONL logs, and SSH known-hosts.
+
+Start:
+
+```bash
+docker compose up --build -d
+```
+
+Open:
+
+```text
+http://127.0.0.1:5173
+```
+
+Smoke test:
+
+```bash
+docker compose ps
+curl http://127.0.0.1:5080/api/health
+curl http://127.0.0.1:5080/api/activity/summary
+curl http://127.0.0.1:5080/api/diagnostics/runtime
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+Remove persisted app data only when you intentionally want a clean database:
+
+```bash
+docker compose down -v
+```
+
+The backend container mounts `${HOME}/.ssh` as read-only at `/root/.ssh`. When adding a node from the Dockerized app, use an SSH key path that exists inside the container, for example `/root/.ssh/id_rsa`. The app writes SSH known hosts to `/app/data/known_hosts`, not into your mounted SSH directory.
+
+The Docker stack sets `ProxyRuntime__TunnelCommandName=ssh` to avoid depending on `autossh` inside the image. Local non-Docker runs still default to `autossh`.
+
+Run `curl http://127.0.0.1:5080/api/diagnostics/runtime` after startup. If `ssh`, `scp`, or `ss` is missing in your local .NET SDK base image, extend `src/GhProxy.Api/Dockerfile` with a reachable apt mirror and install `openssh-client` and `iproute2`, or run the API directly on the host.
+
 ## VPS Requirements
 
 Each node should have:
