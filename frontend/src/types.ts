@@ -73,6 +73,7 @@ export interface LocalProxySession {
   socksProxyUrl: string;
   startedAt: string;
   lastActivityAt: string;
+  lastRequestAt?: string | null;
   idleShutdownAt: string;
   stoppedAt?: string | null;
   lastError?: string | null;
@@ -96,6 +97,12 @@ export interface LocalProxyAutomationStatus {
   warning?: string | null;
   nextRetryAt?: string | null;
   lastError?: string | null;
+  availability: string;
+  message: string;
+  severity: 'success' | 'info' | 'warning' | 'error' | 'muted' | string;
+  publicPortOpen: boolean;
+  retryInSeconds?: number | null;
+  lastRequestAt?: string | null;
 }
 
 export interface LocalProxyResult {
@@ -137,6 +144,16 @@ export interface GitHubUsage {
   unitType?: string | null;
   netAmount?: number | null;
   billingUrl: string;
+  quotas: GitHubUsageQuotaSummary[];
+}
+
+export interface GitHubUsageQuotaSummary {
+  name: string;
+  used: number;
+  limit?: number | null;
+  remaining?: number | null;
+  percentUsed?: number | null;
+  unit: string;
 }
 
 export interface GitHubLifecycleResult {

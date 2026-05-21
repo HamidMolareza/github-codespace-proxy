@@ -47,6 +47,7 @@ public interface IGitHubApiClient
     Task<GitHubCodespaceRemote> StopCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
     Task DeleteCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
     Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
+    Task<GitHubCodespaceExportRemote?> GetLatestCodespaceExportAsync(string token, string codespaceName, CancellationToken cancellationToken);
     Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken);
 }
 
@@ -185,6 +186,19 @@ public sealed class GitHubApiClient(
         return ToExport(document.RootElement);
     }
 
+    public async Task<GitHubCodespaceExportRemote?> GetLatestCodespaceExportAsync(string token, string codespaceName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var document = await SendAsync(token, HttpMethod.Get, $"user/codespaces/{Uri.EscapeDataString(codespaceName)}/exports/latest", null, "github.codespaces.export.latest", cancellationToken);
+            return ToExport(document.RootElement);
+        }
+        catch (GitHubApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
     public async Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken)
     {
         var path = $"users/{Uri.EscapeDataString(username)}/settings/billing/usage/summary?product=Codespaces";
@@ -197,6 +211,9 @@ public sealed class GitHubApiClient(
                     ? snakeItems
                     : default;
 
+            var period = GetBillingPeriod(document.RootElement);
+            var compute = new UsageAccumulator("Compute", "included units");
+            var storage = new UsageAccumulator("Storage", "GB-month");
             decimal? quantity = null;
             decimal? netAmount = null;
             string? unitType = null;
@@ -204,15 +221,38 @@ public sealed class GitHubApiClient(
             {
                 foreach (var item in usageItems.EnumerateArray())
                 {
-                    if (!ContainsCodespaces(GetString(item, "product")))
+                    var product = GetString(item, "product");
+                    var sku = GetString(item, "sku") ?? GetString(item, "skuName") ?? GetString(item, "sku_name");
+                    if (!ContainsCodespaces(product) && !ContainsCodespaces(sku))
                     {
                         continue;
                     }
 
-                    quantity = (quantity ?? 0) + (GetDecimal(item, "netQuantity") ?? GetDecimal(item, "grossQuantity") ?? GetDecimal(item, "quantity") ?? 0);
+                    var grossQuantity = GetDecimal(item, "grossQuantity") ?? GetDecimal(item, "quantity") ?? GetDecimal(item, "netQuantity") ?? 0;
+                    quantity = (quantity ?? 0) + grossQuantity;
                     netAmount = (netAmount ?? 0) + (GetDecimal(item, "netAmount") ?? GetDecimal(item, "net_amount") ?? 0);
                     unitType ??= GetString(item, "unitType") ?? GetString(item, "unit_type");
+                    var itemUnit = GetString(item, "unitType") ?? GetString(item, "unit_type");
+                    if (IsCodespacesComputeSku(sku, product))
+                    {
+                        compute.Add(grossQuantity * GetComputeUnitMultiplier(sku), "included units");
+                    }
+                    else if (IsCodespacesStorageSku(sku, product))
+                    {
+                        storage.Add(ToGbMonths(grossQuantity, period.Year, period.Month), "GB-month");
+                    }
                 }
+            }
+
+            var quotas = new List<GitHubUsageQuotaSummaryResponse>();
+            if (compute.HasUsage)
+            {
+                quotas.Add(compute.ToResponse());
+            }
+
+            if (storage.HasUsage)
+            {
+                quotas.Add(storage.ToResponse());
             }
 
             return new GitHubUsageResponse(
@@ -221,7 +261,8 @@ public sealed class GitHubApiClient(
                 quantity,
                 unitType,
                 netAmount,
-                $"https://github.com/settings/billing/usage?query=product%3ACodespaces");
+                $"https://github.com/settings/billing/usage?query=product%3ACodespaces",
+                quotas);
         }
         catch (GitHubApiException ex) when (ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound)
         {
@@ -231,7 +272,8 @@ public sealed class GitHubApiClient(
                 null,
                 null,
                 null,
-                "https://github.com/settings/billing/usage?query=product%3ACodespaces");
+                "https://github.com/settings/billing/usage?query=product%3ACodespaces",
+                []);
         }
     }
 
@@ -242,7 +284,7 @@ public sealed class GitHubApiClient(
         if (!response.IsSuccessStatusCode)
         {
             await WriteFailureAsync(eventType, response, content, cancellationToken);
-            throw new GitHubApiException(response.StatusCode, $"GitHub API returned {(int)response.StatusCode} {response.ReasonPhrase}.", content);
+            throw new GitHubApiException(response.StatusCode, BuildGitHubErrorMessage(response, content), content);
         }
 
         if (string.IsNullOrWhiteSpace(content))
@@ -261,7 +303,7 @@ public sealed class GitHubApiClient(
         if (!response.IsSuccessStatusCode)
         {
             await WriteFailureAsync(eventType, response, content, cancellationToken);
-            throw new GitHubApiException(response.StatusCode, $"GitHub API returned {(int)response.StatusCode} {response.ReasonPhrase}.", content);
+            throw new GitHubApiException(response.StatusCode, BuildGitHubErrorMessage(response, content), content);
         }
 
         await WriteSuccessAsync(eventType, response, cancellationToken);
@@ -330,6 +372,50 @@ public sealed class GitHubApiClient(
             StandardError: body),
             cancellationToken);
 
+    private static string BuildGitHubErrorMessage(HttpResponseMessage response, string content)
+    {
+        var statusText = $"GitHub API returned {(int)response.StatusCode} {response.ReasonPhrase}.";
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return statusText;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            var root = document.RootElement;
+            var details = new List<string>();
+            var message = GetString(root, "message");
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                details.Add(message);
+            }
+
+            if (root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var error in errors.EnumerateArray().Take(3))
+                {
+                    var errorMessage = GetString(error, "message");
+                    var code = GetString(error, "code");
+                    var field = GetString(error, "field");
+                    var resource = GetString(error, "resource");
+                    var parts = new[] { resource, field, code, errorMessage }.Where(x => !string.IsNullOrWhiteSpace(x));
+                    var detail = string.Join(" ", parts);
+                    if (!string.IsNullOrWhiteSpace(detail))
+                    {
+                        details.Add(detail);
+                    }
+                }
+            }
+
+            return details.Count == 0 ? statusText : $"{statusText} {string.Join(" ", details)}";
+        }
+        catch (JsonException)
+        {
+            return statusText;
+        }
+    }
+
     private static GitHubCodespaceRemote ToCodespace(JsonElement element)
     {
         var machine = element.TryGetProperty("machine", out var machineElement)
@@ -391,4 +477,88 @@ public sealed class GitHubApiClient(
 
     private static bool ContainsCodespaces(string? value) =>
         value?.Contains("codespaces", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsCodespacesComputeSku(string? sku, string? product) =>
+        sku?.StartsWith("codespaces_compute_", StringComparison.OrdinalIgnoreCase) == true ||
+        product?.Contains("compute", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsCodespacesStorageSku(string? sku, string? product) =>
+        sku?.Equals("codespaces_storage", StringComparison.OrdinalIgnoreCase) == true ||
+        sku?.Equals("codespaces_prebuild_storage", StringComparison.OrdinalIgnoreCase) == true ||
+        product?.Contains("storage", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static decimal GetComputeUnitMultiplier(string? sku)
+    {
+        if (string.IsNullOrWhiteSpace(sku))
+        {
+            return 1;
+        }
+
+        var suffix = sku[(sku.LastIndexOf('_') + 1)..];
+        var digits = new string(suffix.Where(char.IsDigit).ToArray());
+        return decimal.TryParse(digits, out var cores) && cores > 0 ? cores : 1;
+    }
+
+    private static decimal ToGbMonths(decimal gbHours, int year, int month)
+    {
+        var hoursInMonth = DateTime.DaysInMonth(year, month) * 24;
+        return hoursInMonth <= 0 ? 0 : gbHours / hoursInMonth;
+    }
+
+    private static (int Year, int Month) GetBillingPeriod(JsonElement root)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!root.TryGetProperty("timePeriod", out var period))
+        {
+            return (now.Year, now.Month);
+        }
+
+        var year = GetInt(period, "year") ?? now.Year;
+        var month = GetInt(period, "month") ?? now.Month;
+        return month is >= 1 and <= 12 ? (year, month) : (now.Year, now.Month);
+    }
+
+    private static int? GetInt(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number when value.TryGetInt32(out var number) => number,
+            JsonValueKind.String when int.TryParse(value.GetString(), out var number) => number,
+            _ => null
+        };
+    }
+
+    private sealed class UsageAccumulator(string name, string fallbackUnit)
+    {
+        public decimal Used { get; private set; }
+        public string Unit { get; private set; } = fallbackUnit;
+        public bool HasUsage { get; private set; }
+
+        public void Add(decimal quantity, string? unit)
+        {
+            Used += quantity;
+            if (!string.IsNullOrWhiteSpace(unit))
+            {
+                Unit = NormalizeUnit(unit);
+            }
+
+            HasUsage = true;
+        }
+
+        public GitHubUsageQuotaSummaryResponse ToResponse() =>
+            new(name, Used, null, null, null, Unit);
+    }
+
+    private static string NormalizeUnit(string unit) =>
+        unit.Trim().ToLowerInvariant() switch
+        {
+            "hours" or "hour" or "hrs" or "hr" => "core hours",
+            "gb_month" or "gb-month" or "gb month" or "gb-months" or "gb months" => "GB-month",
+            _ => unit.Trim()
+        };
 }

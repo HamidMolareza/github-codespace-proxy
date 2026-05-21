@@ -40,8 +40,8 @@ public sealed class CodespaceProxyAutomationServiceTests
             await db.SaveChangesAsync();
 
             var github = new FakeGitHubApiClient();
-            github.UsageByToken["low-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 1, "hours", 0, "billing");
-            github.UsageByToken["high-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 10, "hours", 0, "billing");
+            github.UsageByToken["low-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 1, "hours", 0, "billing", []);
+            github.UsageByToken["high-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 10, "hours", 0, "billing", []);
             github.CodespacesByToken["low-token"] =
             [
                 new GitHubCodespaceRemote("selected", "Available", "low/proxy2", "2-core", "UsEast", null, "low", now, now, now)
@@ -125,6 +125,9 @@ public sealed class CodespaceProxyAutomationServiceTests
             throw new NotSupportedException();
 
         public Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<GitHubCodespaceExportRemote?> GetLatestCodespaceExportAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
         public Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken) =>

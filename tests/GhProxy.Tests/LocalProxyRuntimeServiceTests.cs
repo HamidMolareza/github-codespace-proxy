@@ -110,6 +110,37 @@ public sealed class LocalProxyRuntimeServiceTests
         }
     }
 
+    [Fact]
+    public async Task StartCodespaceProxyAsync_SchedulesRetryWhenGitHubRefreshFails()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var github = new FakeGitHubApiClient
+        {
+            ListCodespacesException = new HttpRequestException("network down")
+        };
+        await using var provider = CreateProvider(databasePath, github);
+        try
+        {
+            var account = await CreateAccountAsync(provider);
+            var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
+
+            var result = await runtime.StartCodespaceProxyAsync(account.Id, "fresh", null, CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("network down", result.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(0, github.StartCalls);
+            var status = runtime.GetAutomationStatus();
+            Assert.Equal("Retrying", status.Phase);
+            Assert.Equal(account.Id, status.AccountId);
+            Assert.Equal("fresh", status.CodespaceName);
+            Assert.NotNull(status.NextRetryAt);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
     private static ServiceProvider CreateProvider(
         string databasePath,
         FakeGitHubApiClient? github = null,
@@ -245,6 +276,7 @@ public sealed class LocalProxyRuntimeServiceTests
 
     private sealed class FakeGitHubApiClient : IGitHubApiClient
     {
+        public Exception? ListCodespacesException { get; init; }
         public int StartCalls { get; private set; }
 
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
@@ -256,8 +288,15 @@ public sealed class LocalProxyRuntimeServiceTests
         public Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<GitHubCodespaceRemote>>([]);
+        public Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken)
+        {
+            if (ListCodespacesException is not null)
+            {
+                throw ListCodespacesException;
+            }
+
+            return Task.FromResult<IReadOnlyList<GitHubCodespaceRemote>>([]);
+        }
 
         public Task<GitHubCodespaceRemote> CreateCodespaceAsync(string token, CreateCodespaceRequest request, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
@@ -277,8 +316,11 @@ public sealed class LocalProxyRuntimeServiceTests
         public Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<GitHubCodespaceExportRemote?> GetLatestCodespaceExportAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", null, null, null, "https://github.com/settings/billing/usage"));
+            Task.FromResult(new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", null, null, null, "https://github.com/settings/billing/usage", []));
     }
 
     private sealed class TestHostEnvironment(string contentRootPath) : IHostEnvironment

@@ -11,8 +11,12 @@ public sealed class LocalProxySession
     public int SocksPort { get; set; } = 8910;
     public DateTimeOffset StartedAt { get; set; }
     public DateTimeOffset LastActivityAt { get; set; }
+    public DateTimeOffset? LastRequestAt { get; set; }
     public DateTimeOffset? StoppedAt { get; set; }
     public string? LastError { get; set; }
+    public Guid? AccountId { get; set; }
+    public string? CodespaceName { get; set; }
+    public int? RemoteProxyPort { get; set; }
     public long TotalRequests { get; set; }
     public long TotalConnectTunnels { get; set; }
     public long TotalBytesReceived { get; set; }

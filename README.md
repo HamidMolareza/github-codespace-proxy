@@ -15,6 +15,10 @@ The application stores GitHub username/PAT records with ASP.NET Core Data Protec
 - Block create/start when an account is marked `Limited`.
 - Keep one local mixed proxy port bound, with HTTP and SOCKS5 both available on `127.0.0.1:8910`.
 - On first proxy traffic, automatically select the configured account with the lowest Codespaces usage, ensure the `wproxy97/proxy2` fork and Codespace exist, stop extra running Codespaces, and start the tunnel-backed Xray proxy.
+- Keep a lightweight wake gateway bound while the backend is idle, down, retrying, or starting. Requests are rejected until the Codespace/Xray backend is ready.
+- Show clear proxy availability: `Up`, `Starting`, `Retrying`, `Idle`, or `Down`, with retry countdowns, latest request time, idle time, and idle shutdown time.
+- Retry Codespace proxy startup automatically after startup, tunnel, probe, or restart failures; allow manual retry from the Codespace Proxy tab.
+- Remember the selected UI tab in the URL and allow `System`, `Light`, and `Dark` themes.
 - Inspect operational activity, diagnostics, and correlation IDs.
 
 The app reproduces the stable `sp-proxy` shape with native `gh`: it starts/resumes the selected Codespace, opens `gh codespace ports forward` from remote `127.0.0.1:8899` to a hidden local tunnel port, and routes Xray through that tunnel. Limited accounts are skipped, and idle shutdown stops the backing Codespace to reduce Codespaces usage.
@@ -51,7 +55,7 @@ Host-network endpoints:
 - Backend API: `127.0.0.1:5080`
 - Codespace proxy: `127.0.0.1:8910` for both HTTP and SOCKS5
 
-Compose uses Linux host networking so `gh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, and sets `HOME=/app/data/home`. The gateway binds `127.0.0.1:8910` immediately; the first HTTP or SOCKS request starts the best available Codespace backend. Startup uses `gh codespace ports forward 8899:<hidden-port> -c <codespace>` by default, matching the working `sp-proxy` flow. Optional remote proxy verification/startup can be enabled with `LocalProxy__CodespaceEnsureRemoteProxy=true`.
+Compose uses Linux host networking so `gh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, sets `TZ=Asia/Tehran`, and sets `HOME=/app/data/home`. The gateway binds `127.0.0.1:8910` immediately; the first HTTP or SOCKS request starts the best available Codespace backend. Startup uses `gh codespace ports forward 8899:<hidden-port> -c <codespace>` by default, matching the working `sp-proxy` flow. Optional remote proxy verification/startup can be enabled with `LocalProxy__CodespaceEnsureRemoteProxy=true`.
 
 Check the stack:
 
@@ -59,6 +63,7 @@ Check the stack:
 docker compose ps
 curl http://127.0.0.1:5080/api/health
 curl http://127.0.0.1:5080/api/diagnostics/runtime
+curl http://127.0.0.1:5080/api/local-proxy/status
 ```
 
 `/api/diagnostics/runtime` must show Xray, GitHub CLI, ssh, and GitHub direct networking as ready before a Codespace proxy can start.
@@ -90,3 +95,25 @@ The API writes structured operational events to SQLite and, by default, JSONL fi
 - `GET /api/diagnostics/runtime`
 
 Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. GitHub API paths/statuses, Codespace tunnel events, Xray proxy events, failures, and bounded snippets are recorded with secret redaction.
+
+## Codespace Proxy Status And Retry
+
+The Codespace Proxy tab reads `GET /api/local-proxy/status`. The response includes the selected account/Codespace, status phase, availability, severity, retry countdown, latest request timestamp, public-port state, and latest session details.
+
+Manual recovery is available with:
+
+```bash
+curl -X POST http://127.0.0.1:5080/api/local-proxy/retry
+```
+
+Use the Retry button when the panel shows `Down`, `Retrying`, or `Idle`. The automatic retry loop also recovers the latest failed Codespace-backed session after container restarts or transient internet/GitHub failures.
+
+## UI Preferences
+
+The frontend stores the selected tab in the URL query string. Refreshing `/?tab=local-proxy` or `/?tab=activity` returns to that tab.
+
+Theme preference is stored in browser `localStorage` under `gh-proxy.theme`. Supported values are:
+
+- `system`: follow the operating-system color scheme.
+- `light`: force the light theme.
+- `dark`: force the dark theme.

@@ -27,6 +27,17 @@ public sealed class DatabaseSchemaInitializerTests
                 """)
                 .ToListAsync();
             Assert.Equal(["CodespaceSnapshots", "GitHubAccounts", "LocalProxyProfiles", "LocalProxySessions", "OperationalEvents"], tables);
+            var localProxySessionColumns = await db.Database.SqlQueryRaw<string>(
+                """
+                SELECT name AS Value
+                FROM pragma_table_info('LocalProxySessions')
+                ORDER BY name
+                """)
+                .ToListAsync();
+            Assert.Contains("LastRequestAt", localProxySessionColumns);
+            Assert.Contains("AccountId", localProxySessionColumns);
+            Assert.Contains("CodespaceName", localProxySessionColumns);
+            Assert.Contains("RemoteProxyPort", localProxySessionColumns);
         }
         finally
         {
@@ -64,7 +75,10 @@ public sealed class DatabaseSchemaInitializerTests
                 BindHost = "127.0.0.1",
                 LocalPort = 8910,
                 StartedAt = DateTimeOffset.UtcNow,
-                LastActivityAt = DateTimeOffset.UtcNow
+                LastActivityAt = DateTimeOffset.UtcNow,
+                AccountId = Guid.NewGuid(),
+                CodespaceName = "space",
+                RemoteProxyPort = 8899
             });
             await db.SaveChangesAsync();
 
@@ -72,7 +86,11 @@ public sealed class DatabaseSchemaInitializerTests
             await db.Entry(profile).ReloadAsync();
 
             Assert.Equal(GhProxy.Api.Domain.LocalProxyProfileStatus.Stopped, profile.Status);
-            Assert.Equal(GhProxy.Api.Domain.LocalProxySessionStatus.Error, db.LocalProxySessions.AsNoTracking().Single().Status);
+            var session = db.LocalProxySessions.AsNoTracking().Single();
+            Assert.Equal(GhProxy.Api.Domain.LocalProxySessionStatus.Error, session.Status);
+            Assert.Equal(DatabaseSchemaInitializer.RestartedActiveSessionMessage, session.LastError);
+            Assert.Equal("space", session.CodespaceName);
+            Assert.Equal(8899, session.RemoteProxyPort);
         }
         finally
         {

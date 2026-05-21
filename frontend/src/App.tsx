@@ -11,12 +11,15 @@ import {
   ExternalLink,
   Filter,
   Github,
+  Monitor,
+  Moon,
   Pencil,
   Play,
   Plus,
   RefreshCw,
   ShieldCheck,
   Square,
+  Sun,
   Terminal,
   Trash2,
   Wifi,
@@ -75,11 +78,17 @@ const defaultActivityFilters: ActivityFilters = {
   limit: 100
 };
 
-type AppTab = 'codespaces' | 'local-proxy' | 'activity';
+const appTimeZone = 'Asia/Tehran';
+const appTabs = ['codespaces', 'local-proxy', 'activity'] as const;
+const themePreferences = ['system', 'light', 'dark'] as const;
+
+type AppTab = (typeof appTabs)[number];
+type ThemePreference = (typeof themePreferences)[number];
 type Notice = { kind: 'info' | 'error'; text: string };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>('codespaces');
+  const [activeTab, setActiveTab] = useState<AppTab>(() => readTabFromUrl());
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
   const [accounts, setAccounts] = useState<GitHubAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [codespaces, setCodespaces] = useState<CodespaceSnapshot[]>([]);
@@ -99,6 +108,19 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>({ kind: 'info', text: 'Ready' });
   const [codespaceProgress, setCodespaceProgress] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    window.localStorage.setItem('gh-proxy.theme', themePreference);
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () => applyThemePreference(themePreference);
+    apply();
+    if (themePreference !== 'system') {
+      return undefined;
+    }
+
+    media.addEventListener('change', apply);
+    return () => media.removeEventListener('change', apply);
+  }, [themePreference]);
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) ?? null,
@@ -168,6 +190,12 @@ export default function App() {
   }, [loadAll]);
 
   useEffect(() => {
+    const onPopState = () => setActiveTab(readTabFromUrl());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
     loadCodespaces(selectedAccountId).catch(() => undefined);
   }, [loadCodespaces, selectedAccountId]);
 
@@ -186,7 +214,7 @@ export default function App() {
     setNotice({ kind: 'info', text: label.replaceAll('-', ' ') });
     try {
       const result = await action();
-      setNotice({ kind: 'info', text: formatResult(label, result) });
+      setNotice({ kind: actionSucceeded(result) ? 'info' : 'error', text: formatResult(label, result) });
       await loadAccounts();
       await loadLocalProxy();
       const accountId = lifecycleAccountId(result) ?? selectedAccountId;
@@ -318,6 +346,11 @@ export default function App() {
     setActivityFilters((current) => ({ ...current, [field]: value }));
   }
 
+  function selectTab(tab: AppTab) {
+    setActiveTab(tab);
+    writeTabToUrl(tab);
+  }
+
   async function applyActivityFilters(event: FormEvent) {
     event.preventDefault();
     await runAction('refresh-activity', () => loadActivity(activityFilters));
@@ -357,9 +390,25 @@ export default function App() {
           <h1>GitHub Codespaces Manager</h1>
           <p>Run a GitHub Codespace-backed proxy with one HTTP/SOCKS port</p>
         </div>
-        <button className="icon-button" onClick={() => runAction('refresh', loadAll)} disabled={busy !== null} title="Refresh">
-          <RefreshCw size={18} />
-        </button>
+        <div className="topbar-actions">
+          <div className="theme-switch" aria-label="Theme">
+            <button type="button" className={themePreference === 'system' ? 'active-option' : ''} onClick={() => setThemePreference('system')} title="Use system theme">
+              <Monitor size={16} />
+              <span>System</span>
+            </button>
+            <button type="button" className={themePreference === 'light' ? 'active-option' : ''} onClick={() => setThemePreference('light')} title="Use light theme">
+              <Sun size={16} />
+              <span>Light</span>
+            </button>
+            <button type="button" className={themePreference === 'dark' ? 'active-option' : ''} onClick={() => setThemePreference('dark')} title="Use dark theme">
+              <Moon size={16} />
+              <span>Dark</span>
+            </button>
+          </div>
+          <button type="button" className="icon-button" onClick={() => runAction('refresh', loadAll)} disabled={busy !== null} title="Refresh">
+            <RefreshCw size={18} />
+          </button>
+        </div>
       </header>
 
       <section className="status-band">
@@ -376,15 +425,15 @@ export default function App() {
       )}
 
       <section className="tabs">
-        <button className={activeTab === 'codespaces' ? 'active-tab' : ''} onClick={() => setActiveTab('codespaces')}>
+        <button className={activeTab === 'codespaces' ? 'active-tab' : ''} onClick={() => selectTab('codespaces')}>
           <Cloud size={16} />
           Codespaces
         </button>
-        <button className={activeTab === 'local-proxy' ? 'active-tab' : ''} onClick={() => setActiveTab('local-proxy')}>
+        <button className={activeTab === 'local-proxy' ? 'active-tab' : ''} onClick={() => selectTab('local-proxy')}>
           <Wifi size={16} />
           Codespace Proxy
         </button>
-        <button className={activeTab === 'activity' ? 'active-tab' : ''} onClick={() => setActiveTab('activity')}>
+        <button className={activeTab === 'activity' ? 'active-tab' : ''} onClick={() => selectTab('activity')}>
           <Activity size={16} />
           Activity
         </button>
@@ -399,6 +448,7 @@ export default function App() {
           codespaceProgress={codespaceProgress}
           codespaces={codespaces}
           codespaceProxyMissingTools={codespaceProxyMissingTools}
+          localSession={localSession}
           editingAccountId={editingAccountId}
           selectedAccount={selectedAccount}
           selectedAccountId={selectedAccountId}
@@ -430,6 +480,7 @@ export default function App() {
           session={localSession}
           status={localStatus}
           onProbe={() => runAction('probe-local-proxy', () => api.probeLocalProxy())}
+          onRetry={() => runAction('retry-local-proxy', () => api.retryLocalProxy())}
           onSaveSettings={saveSettings}
           onStop={() => runAction('stop-local-proxy', () => api.stopLocalProxy())}
           onUpdateField={updateSettingsField}
@@ -464,6 +515,7 @@ interface CodespacesPanelProps {
   codespaceProgress: Record<string, string>;
   codespaces: CodespaceSnapshot[];
   codespaceProxyMissingTools: string[];
+  localSession: LocalProxySession | null;
   editingAccountId: string | null;
   selectedAccount: GitHubAccount | null;
   selectedAccountId: string | null;
@@ -493,6 +545,7 @@ function CodespacesPanel({
   codespaceProgress,
   codespaces,
   codespaceProxyMissingTools,
+  localSession,
   editingAccountId,
   selectedAccount,
   selectedAccountId,
@@ -647,6 +700,7 @@ function CodespacesPanel({
             </a>
           )}
         </div>
+        {usage && <UsageQuotaSummary usage={usage} />}
         {usage && <section className={`notice ${usage.state === 'Unavailable' || usage.state === 'Limited' ? 'error' : ''}`}>{usage.message}</section>}
         {codespaceProxyMissingTools.length > 0 && (
           <section className="notice error">
@@ -659,6 +713,7 @@ function CodespacesPanel({
           codespaceProgress={codespaceProgress}
           codespaces={codespaces}
           codespaceProxyReady={codespaceProxyMissingTools.length === 0}
+          localSession={localSession}
           selectedAccountId={selectedAccountId}
           onDelete={onDeleteCodespace}
           onExport={onExportCodespace}
@@ -671,11 +726,54 @@ function CodespacesPanel({
   );
 }
 
+function UsageQuotaSummary({ usage }: { usage: GitHubUsage }) {
+  if (usage.quotas.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="quota-summary">
+      {usage.quotas.map((quota) => {
+        const percent = quota.percentUsed ?? null;
+        return (
+          <article className={`quota-card ${quotaClass(percent)}`} key={quota.name}>
+            <div className="quota-card-title">
+              {quota.name === 'Storage' ? <Database size={18} /> : <Cloud size={18} />}
+              <strong>{quota.name}</strong>
+              {percent !== null && <span>{formatPercent(percent)}</span>}
+            </div>
+            <div className="quota-values">
+              <span>
+                Used
+                <strong>{formatQuotaValue(quota.used, quota.unit)}</strong>
+              </span>
+              <span>
+                Remaining
+                <strong>{quota.remaining !== null && quota.remaining !== undefined ? formatQuotaValue(quota.remaining, quota.unit) : 'Unknown'}</strong>
+              </span>
+              <span>
+                Limit
+                <strong>{quota.limit !== null && quota.limit !== undefined ? formatQuotaValue(quota.limit, quota.unit) : 'Unknown'}</strong>
+              </span>
+            </div>
+            {percent !== null && (
+              <div className="quota-bar" aria-hidden="true">
+                <span style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
+              </div>
+            )}
+          </article>
+        );
+      })}
+    </section>
+  );
+}
+
 interface CodespaceTableProps {
   busy: string | null;
   codespaceProgress: Record<string, string>;
   codespaces: CodespaceSnapshot[];
   codespaceProxyReady: boolean;
+  localSession: LocalProxySession | null;
   selectedAccountId: string | null;
   onDelete: (accountId: string, name: string) => void;
   onExport: (accountId: string, name: string) => void;
@@ -684,7 +782,7 @@ interface CodespaceTableProps {
   onStop: (accountId: string, name: string) => void;
 }
 
-function CodespaceTable({ busy, codespaceProgress, codespaces, codespaceProxyReady, selectedAccountId, onDelete, onExport, onRefresh, onStart, onStop }: CodespaceTableProps) {
+function CodespaceTable({ busy, codespaceProgress, codespaces, codespaceProxyReady, localSession, selectedAccountId, onDelete, onExport, onRefresh, onStart, onStop }: CodespaceTableProps) {
   if (!selectedAccountId) {
     return <div className="empty-state">Select or create a GitHub account.</div>;
   }
@@ -705,6 +803,10 @@ function CodespaceTable({ busy, codespaceProgress, codespaces, codespaceProxyRea
       </div>
       {codespaces.map((codespace) => {
         const progress = codespaceProgress[progressKey(selectedAccountId, codespace.name)];
+        const state = (progress ?? codespace.state).toLowerCase();
+        const isActiveCodespace = ['available', 'running', 'starting', 'queued', 'provisioning'].includes(state);
+        const isRunningCodespace = ['available', 'running'].includes(state);
+        const isActiveProxy = localSession?.codespaceName === codespace.name && localSession.status === 'Running';
         return (
           <div className="codespace-row" key={codespace.id}>
             <span>
@@ -716,10 +818,10 @@ function CodespaceTable({ busy, codespaceProgress, codespaces, codespaceProxyRea
             <span>{codespace.machineDisplayName ?? codespace.location ?? ''}</span>
             <span>{codespace.lastUsedAt ? formatDate(codespace.lastUsedAt) : ''}</span>
             <span className="row-actions">
-              <button title={codespaceProxyReady ? 'Run Codespace proxy' : 'Runtime tools are missing'} onClick={() => onStart(selectedAccountId, codespace.name)} disabled={busy !== null || !codespaceProxyReady}>
+              <button title={codespaceProxyReady ? (isActiveCodespace ? 'Codespace is already started' : 'Start Codespace proxy') : 'Runtime tools are missing'} onClick={() => onStart(selectedAccountId, codespace.name)} disabled={busy !== null || !codespaceProxyReady || isActiveCodespace || isActiveProxy}>
                 <Play size={16} />
               </button>
-              <button title="Stop" onClick={() => onStop(selectedAccountId, codespace.name)} disabled={busy !== null}>
+              <button title={isRunningCodespace ? 'Stop' : 'Codespace is not running'} onClick={() => onStop(selectedAccountId, codespace.name)} disabled={busy !== null || !isRunningCodespace}>
                 <CircleStop size={16} />
               </button>
               <button title="Refresh" onClick={() => onRefresh(selectedAccountId, codespace.name)} disabled={busy !== null}>
@@ -750,6 +852,7 @@ interface LocalProxyPanelProps {
   session: LocalProxySession | null;
   status: LocalProxyAutomationStatus | null;
   onProbe: () => void;
+  onRetry: () => void;
   onSaveSettings: (event: FormEvent) => Promise<void>;
   onStop: () => void;
   onUpdateField: <K extends keyof LocalProxySettingsForm>(field: K, value: LocalProxySettingsForm[K]) => void;
@@ -763,11 +866,21 @@ function LocalProxyPanel({
   session,
   status,
   onProbe,
+  onRetry,
   onSaveSettings,
   onStop,
   onUpdateField
 }: LocalProxyPanelProps) {
   const settings = selectedProfile;
+  const statusAvailability = status?.availability ?? (session ? 'Up' : 'Idle');
+  const statusSeverity = status?.severity ?? (session ? 'success' : 'muted');
+  const statusMessage = status?.message ?? (session ? 'Proxy is up.' : 'Proxy is idle.');
+  const retryText = status?.retryInSeconds !== null && status?.retryInSeconds !== undefined
+    ? `Retry in ${status.retryInSeconds}s`
+    : null;
+  const lastRequestAt = status?.lastRequestAt ?? session?.lastRequestAt ?? null;
+  const idleSummary = session ? buildIdleSummary(session) : null;
+  const canRetry = statusAvailability !== 'Up' && statusAvailability !== 'Starting';
   const proxyExports = session
     ? [
         `export HTTP_PROXY=${session.httpProxyUrl}`,
@@ -784,10 +897,12 @@ function LocalProxyPanel({
   return (
     <>
       <section className="active-strip">
-        <span className={`badge ${badgeClass(session?.status ?? 'Stopped')}`}>{session?.status ?? 'Stopped'}</span>
-        <strong>{session ? session.profileName : 'Gateway waiting for proxy traffic'}</strong>
+        <span className={`badge ${badgeClass(statusAvailability)}`}>{statusAvailability}</span>
+        <strong>{session ? session.profileName : status?.publicPortOpen ? 'Codespace proxy wake gateway' : 'Codespace proxy is not listening'}</strong>
         {session && <span>{session.activeConnections} active / {session.totalRequests} requests</span>}
+        {idleSummary && <span>Idle {idleSummary.idleFor} / stop in {idleSummary.stopIn}</span>}
         {!session && <span>{settings ? `${settings.bindHost}:${settings.localPort}` : 'Loading settings'}</span>}
+        <span>{status?.publicPortOpen ? 'public port open' : 'public port closed'}</span>
         <div className="active-actions">
           <button title="Stop active proxy" onClick={onStop} disabled={busy !== null || !session}>
             <Square size={17} />
@@ -865,20 +980,29 @@ function LocalProxyPanel({
           </div>
           {profiles.length === 0 && <div className="empty-state">Loading Codespace proxy settings.</div>}
           {settings && (
-            <article className="node-card selected-row">
+            <article className={`node-card selected-row proxy-status-card status-${badgeClass(statusSeverity)}`}>
               <div className="node-main">
                 <div>
                   <h3>Single Codespace Proxy</h3>
-                  <p>HTTP and SOCKS {settings.bindHost}:{settings.localPort}</p>
+                  <p>{statusMessage}</p>
                 </div>
-                <span className={`badge ${badgeClass(session?.status ?? settings.status)}`}>{session?.status ?? settings.status}</span>
+                <span className={`badge ${badgeClass(statusAvailability)}`}>{statusAvailability}</span>
               </div>
               <div className="node-meta">
                 <span>{settings.idleShutdownMinutes}m idle</span>
                 <span>{settings.requiresAuthentication ? `auth ${settings.proxyUsername}` : 'no auth'}</span>
                 <span>{status?.phase ?? 'WaitingForTraffic'}</span>
+                {retryText && <span>{retryText}</span>}
+                {idleSummary && <span>Idle for {idleSummary.idleFor}</span>}
+                {idleSummary && <span>Stops Codespace in {idleSummary.stopIn}</span>}
+                <span>Latest request: {lastRequestAt ? formatDateTime(lastRequestAt) : 'Never'}</span>
                 {status?.selectedAccount && <span>{status.selectedAccount}</span>}
                 {session?.codespaceName && <span>{session.codespaceName}</span>}
+              </div>
+              <div className="node-actions">
+                <button title="Retry Codespace proxy startup" type="button" onClick={onRetry} disabled={busy !== null || !canRetry}>
+                  <RefreshCw size={16} /> Retry
+                </button>
               </div>
               {status?.warning && <p className="muted warning-text">{status.warning}</p>}
               {status?.lastError && <p className="muted warning-text">{status.lastError}</p>}
@@ -1032,7 +1156,7 @@ function ActivityPanel({
               </button>
             </div>
             <dl className="event-fields">
-              <div><dt>Timestamp</dt><dd>{new Date(selectedEvent.timestamp).toLocaleString()}</dd></div>
+              <div><dt>Timestamp</dt><dd>{formatDateTime(selectedEvent.timestamp)}</dd></div>
               <div><dt>Severity</dt><dd>{selectedEvent.severity}</dd></div>
               <div><dt>Correlation</dt><dd>{selectedEvent.correlationId ?? ''}</dd></div>
               <div><dt>Command</dt><dd>{selectedEvent.commandDisplay ?? ''}</dd></div>
@@ -1071,12 +1195,62 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Unexpected error';
 }
 
+function readTabFromUrl(): AppTab {
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get('tab');
+  return isAppTab(tab) ? tab : 'codespaces';
+}
+
+function writeTabToUrl(tab: AppTab) {
+  const url = new URL(window.location.href);
+  if (tab === 'codespaces') {
+    url.searchParams.delete('tab');
+  } else {
+    url.searchParams.set('tab', tab);
+  }
+
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextUrl !== currentUrl) {
+    window.history.pushState(null, '', nextUrl);
+  }
+}
+
+function isAppTab(value: string | null): value is AppTab {
+  return appTabs.some((tab) => tab === value);
+}
+
+function readThemePreference(): ThemePreference {
+  const stored = window.localStorage.getItem('gh-proxy.theme');
+  return isThemePreference(stored) ? stored : 'system';
+}
+
+function isThemePreference(value: string | null): value is ThemePreference {
+  return themePreferences.some((theme) => theme === value);
+}
+
+function applyThemePreference(preference: ThemePreference) {
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.theme = preference === 'system'
+    ? prefersDark ? 'dark' : 'light'
+    : preference;
+  document.documentElement.dataset.themePreference = preference;
+}
+
 function formatResult(label: string, result: unknown) {
   if (isGitHubLifecycleResult(result) || isLocalProxyResult(result)) {
     return result.message;
   }
 
   return label.replaceAll('-', ' ');
+}
+
+function actionSucceeded(result: unknown) {
+  if (isGitHubLifecycleResult(result) || isLocalProxyResult(result)) {
+    return result.succeeded;
+  }
+
+  return true;
 }
 
 function isGitHubLifecycleResult(result: unknown): result is GitHubLifecycleResult {
@@ -1093,11 +1267,86 @@ function lifecycleAccountId(result: unknown) {
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
+    timeZone: appTimeZone,
     month: 'short',
     day: '2-digit',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    timeZoneName: 'short'
   }).format(new Date(value));
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: appTimeZone,
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short'
+  }).format(new Date(value));
+}
+
+function buildIdleSummary(session: LocalProxySession) {
+  const now = Date.now();
+  const lastActivityAt = Date.parse(session.lastActivityAt);
+  const idleShutdownAt = Date.parse(session.idleShutdownAt);
+  if (Number.isNaN(lastActivityAt) || Number.isNaN(idleShutdownAt)) {
+    return null;
+  }
+
+  return {
+    idleFor: formatDuration(Math.max(0, now - lastActivityAt)),
+    stopIn: formatDuration(Math.max(0, idleShutdownAt - now))
+  };
+}
+
+function formatDuration(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+  }
+
+  if (minutes > 0) {
+    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  }
+
+  return `${seconds}s`;
+}
+
+function formatQuotaValue(value: number, unit: string) {
+  return `${formatCompactNumber(value)} ${unit}`;
+}
+
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: Math.abs(value) < 10 ? 1 : 0
+  }).format(value);
+}
+
+function formatPercent(value: number) {
+  return `${formatCompactNumber(value)}%`;
+}
+
+function quotaClass(percent: number | null) {
+  if (percent === null) {
+    return '';
+  }
+
+  if (percent >= 100) {
+    return 'quota-limited';
+  }
+
+  if (percent >= 90) {
+    return 'quota-warning';
+  }
+
+  return 'quota-healthy';
 }
 
 function badgeClass(value: string | number | null | undefined) {

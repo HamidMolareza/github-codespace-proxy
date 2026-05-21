@@ -27,7 +27,13 @@ public sealed record LocalProxyAutomationStatusResponse(
     string? SelectedCodespace,
     string? Warning,
     DateTimeOffset? NextRetryAt,
-    string? LastError);
+    string? LastError,
+    string Availability,
+    string Message,
+    string Severity,
+    bool PublicPortOpen,
+    int? RetryInSeconds,
+    DateTimeOffset? LastRequestAt);
 
 public sealed record LocalProxyProfileResponse(
     Guid Id,
@@ -56,6 +62,7 @@ public sealed record LocalProxySessionResponse(
     string SocksProxyUrl,
     DateTimeOffset StartedAt,
     DateTimeOffset LastActivityAt,
+    DateTimeOffset? LastRequestAt,
     DateTimeOffset IdleShutdownAt,
     DateTimeOffset? StoppedAt,
     string? LastError,

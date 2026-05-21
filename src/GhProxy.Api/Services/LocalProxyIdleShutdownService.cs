@@ -12,6 +12,7 @@ public sealed class LocalProxyIdleShutdownService(IServiceScopeFactory scopeFact
             {
                 using var scope = scopeFactory.CreateScope();
                 var runtime = scope.ServiceProvider.GetRequiredService<LocalProxyRuntimeService>();
+                await runtime.RetryIfDueAsync(stoppingToken);
                 await runtime.StopIfIdleAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

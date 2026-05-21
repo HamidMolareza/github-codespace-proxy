@@ -94,7 +94,9 @@ public sealed class GitHubCodespaceService(
     public async Task<GitHubUsageResponse> GetUsageAsync(Guid accountId, CancellationToken cancellationToken)
     {
         var account = await GetAccountAsync(accountId, cancellationToken);
-        var usage = await github.GetCodespacesUsageAsync(secrets.Unprotect(account.ProtectedPersonalAccessToken), account.Username, cancellationToken);
+        var usage = ApplyPlanQuota(
+            await github.GetCodespacesUsageAsync(secrets.Unprotect(account.ProtectedPersonalAccessToken), account.Username, cancellationToken),
+            account.Plan);
         account.QuotaState = usage.State;
         account.UpdatedAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
@@ -143,12 +145,40 @@ public sealed class GitHubCodespaceService(
         await audit.WriteAsync("github.codespaces.delete", $"Deleted Codespace {codespaceName}.", account.Id, cancellationToken);
     }
 
-    public async Task<GitHubCodespaceExportRemote> ExportAsync(Guid accountId, string codespaceName, CancellationToken cancellationToken)
+    public async Task<GitHubCodespaceExportResult> ExportAsync(Guid accountId, string codespaceName, CancellationToken cancellationToken)
     {
         var account = await GetAccountAsync(accountId, cancellationToken);
-        var export = await github.ExportCodespaceAsync(secrets.Unprotect(account.ProtectedPersonalAccessToken), codespaceName, cancellationToken);
+        var token = secrets.Unprotect(account.ProtectedPersonalAccessToken);
+        GitHubCodespaceExportRemote export;
+        string? rejectionMessage = null;
+        var acceptedNewExport = true;
+        try
+        {
+            export = await github.ExportCodespaceAsync(token, codespaceName, cancellationToken);
+        }
+        catch (GitHubApiException ex) when (ex.StatusCode == HttpStatusCode.UnprocessableEntity)
+        {
+            acceptedNewExport = false;
+            rejectionMessage = ex.Message;
+            var latest = await github.GetLatestCodespaceExportAsync(token, codespaceName, cancellationToken);
+            if (latest is null)
+            {
+                throw;
+            }
+
+            await events.WriteAsync(new OperationalEventWrite(
+                "github.codespaces.export.latest_loaded",
+                OperationalEventSeverity.Warning,
+                "GitHub did not accept a new Codespace export request, so the latest export was loaded.",
+                NodeId: account.Id,
+                StandardError: ex.Message,
+                Details: new { account.Username, CodespaceName = codespaceName, latest.Id, latest.State }),
+                cancellationToken);
+            export = latest;
+        }
+
         await audit.WriteAsync("github.codespaces.export", $"Requested export for Codespace {codespaceName}.", account.Id, cancellationToken);
-        return export;
+        return new GitHubCodespaceExportResult(export, acceptedNewExport, rejectionMessage);
     }
 
     private async Task<CodespaceSnapshot> RunLifecycleAsync(
@@ -219,6 +249,59 @@ public sealed class GitHubCodespaceService(
         await db.GitHubAccounts.FirstOrDefaultAsync(x => x.Id == accountId, cancellationToken)
         ?? throw new InvalidOperationException("GitHub account was not found.");
 
+    private static GitHubUsageResponse ApplyPlanQuota(GitHubUsageResponse usage, string plan)
+    {
+        if (usage.State == GitHubAccountQuotaState.Unavailable)
+        {
+            return usage;
+        }
+
+        var planLimits = GetPlanLimits(plan);
+        var quotas = usage.Quotas
+            .Select(quota => ApplyLimit(quota, GetLimit(quota.Name, planLimits)))
+            .ToList();
+        var maxPercentUsed = quotas
+            .Where(x => x.PercentUsed is not null)
+            .Select(x => x.PercentUsed!.Value)
+            .DefaultIfEmpty(-1)
+            .Max();
+        var state = maxPercentUsed switch
+        {
+            >= 100 => GitHubAccountQuotaState.Limited,
+            >= 90 => GitHubAccountQuotaState.Warning,
+            _ => usage.State
+        };
+
+        return usage with { State = state, Quotas = quotas };
+    }
+
+    private static (decimal? Compute, decimal? Storage) GetPlanLimits(string plan) =>
+        plan.Trim().ToLowerInvariant() switch
+        {
+            "free" => (120, 15),
+            "pro" => (180, 20),
+            _ => (null, null)
+        };
+
+    private static decimal? GetLimit(string quotaName, (decimal? Compute, decimal? Storage) limits) =>
+        quotaName.Equals("Compute", StringComparison.OrdinalIgnoreCase)
+            ? limits.Compute
+            : quotaName.Equals("Storage", StringComparison.OrdinalIgnoreCase)
+                ? limits.Storage
+                : null;
+
+    private static GitHubUsageQuotaSummaryResponse ApplyLimit(GitHubUsageQuotaSummaryResponse quota, decimal? limit)
+    {
+        if (limit is null)
+        {
+            return quota;
+        }
+
+        var remaining = Math.Max(0, limit.Value - quota.Used);
+        decimal? percentUsed = limit.Value == 0 ? null : Math.Round(quota.Used / limit.Value * 100, 1);
+        return quota with { Limit = limit, Remaining = remaining, PercentUsed = percentUsed };
+    }
+
     private static void ApplyRemote(CodespaceSnapshot snapshot, GitHubCodespaceRemote remote, DateTimeOffset now)
     {
         snapshot.Name = remote.Name;
@@ -252,3 +335,8 @@ public sealed class GitHubCodespaceService(
         }
     }
 }
+
+public sealed record GitHubCodespaceExportResult(
+    GitHubCodespaceExportRemote Export,
+    bool AcceptedNewExport,
+    string? RejectionMessage);

@@ -150,11 +150,23 @@ public static class GitHubEndpoints
 
         accounts.MapPost("/{id:guid}/codespaces/{name}/export", async (Guid id, string name, GitHubCodespaceService service, CancellationToken ct) =>
         {
-            var export = await service.ExportAsync(id, name, ct);
-            var message = string.IsNullOrWhiteSpace(export.Id)
+            var result = await service.ExportAsync(id, name, ct);
+            var export = result.Export;
+            var state = string.IsNullOrWhiteSpace(export.State) ? "pending" : export.State;
+            var exportLabel = string.IsNullOrWhiteSpace(export.Id) ? "export" : $"export {export.Id}";
+            var stateFailed = state.Equals("failed", StringComparison.OrdinalIgnoreCase) ||
+                              state.Equals("error", StringComparison.OrdinalIgnoreCase);
+            var succeeded = !stateFailed;
+            var prefix = result.AcceptedNewExport
                 ? "Codespace export requested."
-                : $"Codespace export requested. Export {export.Id} is {export.State ?? "pending"}.";
-            return Results.Ok(new GitHubLifecycleResultResponse(true, message, null, ToResponse(export)));
+                : "GitHub rejected a new Codespace export request; loaded the latest export instead.";
+            var message = $"{prefix} {ToSentenceCase(exportLabel)} is {state}.";
+            if (!string.IsNullOrWhiteSpace(result.RejectionMessage))
+            {
+                message = $"{message} GitHub response: {result.RejectionMessage}";
+            }
+
+            return Results.Ok(new GitHubLifecycleResultResponse(succeeded, message, null, ToResponse(export)));
         });
 
         accounts.MapDelete("/{id:guid}/codespaces/{name}", async (Guid id, string name, GitHubCodespaceService service, CancellationToken ct) =>
@@ -204,6 +216,11 @@ public static class GitHubEndpoints
             export.ExportUrl,
             export.HtmlUrl,
             export.CompletedAt);
+
+    private static string ToSentenceCase(string value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? value
+            : string.Concat(char.ToUpperInvariant(value[0]).ToString(), value[1..]);
 
     private static object? ValidateAccount(GitHubAccountRequest request, bool requireToken)
     {

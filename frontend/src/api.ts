@@ -80,6 +80,10 @@ export const api = {
     request<LocalProxyResult>('/api/local-proxy/probe', {
       method: 'POST'
     }),
+  retryLocalProxy: () =>
+    request<LocalProxyResult>('/api/local-proxy/retry', {
+      method: 'POST'
+    }),
   accounts: () => request<GitHubAccount[]>('/api/github/accounts'),
   createAccount: (form: GitHubAccountForm) =>
     request<GitHubAccount>('/api/github/accounts', {

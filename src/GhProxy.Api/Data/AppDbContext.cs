@@ -115,6 +115,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(x => x.BindHost).HasMaxLength(120).IsRequired();
             entity.Property(x => x.LastError).HasMaxLength(2000);
+            entity.Property(x => x.CodespaceName).HasMaxLength(200);
             entity.HasOne(x => x.Profile)
                 .WithMany(x => x.Sessions)
                 .HasForeignKey(x => x.ProfileId)

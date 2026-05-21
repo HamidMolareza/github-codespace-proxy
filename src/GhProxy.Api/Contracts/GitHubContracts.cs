@@ -52,7 +52,16 @@ public sealed record GitHubUsageResponse(
     decimal? Quantity,
     string? UnitType,
     decimal? NetAmount,
-    string BillingUrl);
+    string BillingUrl,
+    IReadOnlyList<GitHubUsageQuotaSummaryResponse> Quotas);
+
+public sealed record GitHubUsageQuotaSummaryResponse(
+    string Name,
+    decimal Used,
+    decimal? Limit,
+    decimal? Remaining,
+    decimal? PercentUsed,
+    string Unit);
 
 public sealed record GitHubCodespaceExportResponse(
     string? Id,

@@ -50,11 +50,12 @@ public static class LocalProxyEndpoints
                     .FirstOrDefault()
                 : null;
             var selectedAccount = runtimeStatus.AccountUsername;
-            if (selectedAccount is null && activeSession?.AccountId is not null)
+            var selectedAccountId = activeSession?.AccountId ?? latestSession?.AccountId;
+            if (selectedAccount is null && selectedAccountId is not null)
             {
                 selectedAccount = await db.GitHubAccounts
                     .AsNoTracking()
-                    .Where(x => x.Id == activeSession.AccountId.Value)
+                    .Where(x => x.Id == selectedAccountId.Value)
                     .Select(x => x.Username)
                     .FirstOrDefaultAsync(ct);
             }
@@ -69,7 +70,9 @@ public static class LocalProxyEndpoints
                     phase = "ZzzIdle";
                     warning ??= $"Idle timeout reached after {settings.IdleShutdownMinutes} minutes. The backing Codespace was stopped to save usage.";
                 }
-                else if (latestSession.Status == LocalProxySessionStatus.Error && phase == "WaitingForTraffic")
+                else if (latestSession.Status == LocalProxySessionStatus.Error &&
+                         phase == "WaitingForTraffic" &&
+                         !string.Equals(latestSession.LastError, DatabaseSchemaInitializer.RestartedActiveSessionMessage, StringComparison.Ordinal))
                 {
                     phase = "Error";
                 }
@@ -83,17 +86,28 @@ public static class LocalProxyEndpoints
                 ? ToResponse(activeSession)
                 : latestSession is null
                     ? null
-                    : ToResponse(latestSession, latestSession.Profile ?? settings, runtimeStatus.AccountId, runtimeStatus.CodespaceName, 0);
+                    : ToResponse(latestSession, latestSession.Profile ?? settings, runtimeStatus.AccountId ?? latestSession.AccountId, runtimeStatus.CodespaceName ?? latestSession.CodespaceName, 0);
+            var statusSummary = BuildStatusSummary(phase, activeSession, runtimeStatus, settings, lastError);
+            int? retryInSeconds = runtimeStatus.NextRetryAt is null
+                ? null
+                : Math.Max(0, (int)Math.Ceiling((runtimeStatus.NextRetryAt.Value - clock.UtcNow).TotalSeconds));
+            var lastRequestAt = runtimeStatus.LastRequestAt ?? activeSession?.LastRequestAt ?? latestSession?.LastRequestAt;
 
             return Results.Ok(new LocalProxyAutomationStatusResponse(
                 ToResponse(settings),
                 sessionResponse,
                 phase,
                 selectedAccount,
-                runtimeStatus.CodespaceName ?? activeSession?.CodespaceName,
+                runtimeStatus.CodespaceName ?? activeSession?.CodespaceName ?? latestSession?.CodespaceName,
                 warning,
                 runtimeStatus.NextRetryAt,
-                lastError));
+                lastError,
+                statusSummary.Availability,
+                statusSummary.Message,
+                statusSummary.Severity,
+                statusSummary.PublicPortOpen,
+                retryInSeconds,
+                lastRequestAt));
         });
 
         group.MapPost("/profiles", async (LocalProxyProfileRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
@@ -226,6 +240,12 @@ public static class LocalProxyEndpoints
             return Results.Ok(new LocalProxyRuntimeResultResponse(result.Succeeded, result.Message, ToResponse(result.Session)));
         });
 
+        group.MapPost("/retry", async (LocalProxyRuntimeService runtime, CancellationToken ct) =>
+        {
+            var result = await runtime.RetryCodespaceProxyAsync(ct);
+            return Results.Ok(new LocalProxyRuntimeResultResponse(result.Succeeded, result.Message, ToResponse(result.Session)));
+        });
+
         return app;
     }
 
@@ -260,6 +280,7 @@ public static class LocalProxyEndpoints
                 state.SocksProxyUrl,
                 state.StartedAt,
                 state.LastActivityAt,
+                state.LastRequestAt,
                 state.IdleShutdownAt,
                 state.StoppedAt,
                 state.LastError,
@@ -296,6 +317,7 @@ public static class LocalProxyEndpoints
             socksProxyUrl,
             session.StartedAt,
             session.LastActivityAt,
+            session.LastRequestAt,
             idleAt,
             session.StoppedAt,
             session.LastError,
@@ -309,6 +331,78 @@ public static class LocalProxyEndpoints
             null,
             null);
     }
+
+    private static LocalProxyStatusSummary BuildStatusSummary(
+        string phase,
+        LocalProxyRuntimeState? activeSession,
+        LocalProxyAutomationRuntimeStatus runtimeStatus,
+        LocalProxyProfile settings,
+        string? lastError)
+    {
+        var normalizedPhase = phase.Trim();
+        if (activeSession?.Status == LocalProxySessionStatus.Running && string.Equals(normalizedPhase, "Running", StringComparison.OrdinalIgnoreCase))
+        {
+            return new LocalProxyStatusSummary(
+                "Up",
+                $"Proxy is up on {settings.BindHost}:{settings.LocalPort}.",
+                "success",
+                PublicPortOpen: true);
+        }
+
+        if (string.Equals(normalizedPhase, "Retrying", StringComparison.OrdinalIgnoreCase))
+        {
+            var retryText = "Retry is scheduled. The wake gateway is listening and incoming traffic can retry startup immediately.";
+            return new LocalProxyStatusSummary(
+                "Retrying",
+                string.IsNullOrWhiteSpace(lastError) ? retryText : $"{lastError} {retryText}",
+                "warning",
+                PublicPortOpen: true);
+        }
+
+        if (IsStartingPhase(normalizedPhase))
+        {
+            return new LocalProxyStatusSummary(
+                "Starting",
+                $"Wake gateway is accepting traffic. Proxy backend is {normalizedPhase}; requests attach after readiness probes pass.",
+                "info",
+                PublicPortOpen: true);
+        }
+
+        if (string.Equals(normalizedPhase, "ZzzIdle", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedPhase, "Stopped", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedPhase, "WaitingForTraffic", StringComparison.OrdinalIgnoreCase))
+        {
+            return new LocalProxyStatusSummary(
+                "Idle",
+                "Proxy is idle. The wake gateway is listening and incoming proxy traffic will start the Codespace.",
+                "muted",
+                PublicPortOpen: true);
+        }
+
+        return new LocalProxyStatusSummary(
+            "Down",
+            string.IsNullOrWhiteSpace(lastError)
+                ? "Proxy backend is down. The wake gateway may return 503 until startup succeeds."
+                : $"{lastError} The wake gateway may return 503 until startup succeeds.",
+            "error",
+            PublicPortOpen: true);
+    }
+
+    private static bool IsStartingPhase(string phase) =>
+        phase.Equals("Starting", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("StartingCodespace", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("SelectingAccount", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("Selected", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("Connecting", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("EnsuringRemoteProxy", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("OpeningTunnel", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("TunnelReady", StringComparison.OrdinalIgnoreCase);
+
+    private sealed record LocalProxyStatusSummary(
+        string Availability,
+        string Message,
+        string Severity,
+        bool PublicPortOpen);
 
     private static bool IsIdleStopped(LocalProxySession session, LocalProxyProfile profile) =>
         session.Status == LocalProxySessionStatus.Stopped &&

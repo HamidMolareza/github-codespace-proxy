@@ -29,6 +29,7 @@ public sealed class LocalProxyRuntimeService(
     private readonly SemaphoreSlim _autoStartGate = new(1, 1);
     private readonly object _statusGate = new();
     private RunningLocalProxy? _running;
+    private CodespaceRetryPlan? _retryPlan;
     private LocalProxyAutomationRuntimeStatus _automationStatus = new("WaitingForTraffic", null, null, null, null, null, null);
 
     public Task<LocalProxyStartResult> StartAsync(Guid profileId, CancellationToken cancellationToken) =>
@@ -66,15 +67,31 @@ public sealed class LocalProxyRuntimeService(
         SetAutomationStatus("StartingCodespace", accountId, account.Username, codespaceName, null, null);
 
         var codespaces = scope.ServiceProvider.GetRequiredService<GitHubCodespaceService>();
-        var beforeStart = await codespaces.RefreshCodespaceAsync(accountId, codespaceName, cancellationToken);
-        var stopOnStartFailure = beforeStart is null || !IsCodespaceRunning(beforeStart.State);
-        await codespaces.StartAsync(accountId, codespaceName, cancellationToken);
+        try
+        {
+            var beforeStart = await codespaces.RefreshCodespaceAsync(accountId, codespaceName, cancellationToken);
+            var stopOnStartFailure = beforeStart is null || !IsCodespaceRunning(beforeStart.State);
+            await codespaces.StartAsync(accountId, codespaceName, cancellationToken);
 
-        return await StartInternalAsync(
-            selectedProfileId,
-            new CodespaceProxyLaunch(accountId, account.Username, token, codespaceName, _options.CodespaceRemoteProxyPort, stopOnStartFailure),
-            attachPublicListener: false,
-            cancellationToken);
+            return await StartInternalAsync(
+                selectedProfileId,
+                new CodespaceProxyLaunch(accountId, account.Username, token, codespaceName, _options.CodespaceRemoteProxyPort, stopOnStartFailure),
+                attachPublicListener: false,
+                cancellationToken);
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            ScheduleRetry(accountId, selectedProfileId, account.Username, codespaceName, ex.Message);
+            await events.WriteAsync(new OperationalEventWrite(
+                "codespace_proxy.start.failed_before_runtime",
+                OperationalEventSeverity.Error,
+                "Codespace proxy startup failed before the local runtime was ready. A retry was scheduled.",
+                NodeId: accountId,
+                StandardError: ex.Message,
+                Details: new { account.Username, codespaceName }),
+                cancellationToken);
+            return LocalProxyStartResult.Fail($"Failed to start Codespace proxy: {ex.Message}", null);
+        }
     }
 
     public async Task<LocalProxyStartResult> EnsureAutomaticCodespaceProxyAsync(CancellationToken cancellationToken)
@@ -153,6 +170,149 @@ public sealed class LocalProxyRuntimeService(
         }
     }
 
+    public async Task RecordGatewayRequestAsync(CancellationToken cancellationToken)
+    {
+        var now = clock.UtcNow;
+        RunningLocalProxy? running;
+        lock (_statusGate)
+        {
+            _automationStatus = _automationStatus with { LastRequestAt = now };
+            running = _running;
+        }
+
+        if (running is { IsStopped: false })
+        {
+            await RecordPublicRequestAsync(running, cancellationToken);
+            return;
+        }
+
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var session = (await db.LocalProxySessions.ToListAsync(cancellationToken))
+            .OrderByDescending(x => x.StartedAt)
+            .FirstOrDefault();
+        if (session is null)
+        {
+            return;
+        }
+
+        session.LastRequestAt = now;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<LocalProxyStartResult> RetryCodespaceProxyAsync(CancellationToken cancellationToken)
+    {
+        var running = _running;
+        if (running is { IsStopped: false, AccountId: not null })
+        {
+            return LocalProxyStartResult.Ok("Codespace-backed proxy is already running.", await GetActiveAsync(cancellationToken));
+        }
+
+        var status = GetAutomationStatus();
+        if (IsStartingAutomationPhase(status.Phase))
+        {
+            return LocalProxyStartResult.Ok("Codespace proxy startup is already in progress.", await GetActiveAsync(cancellationToken));
+        }
+
+        CodespaceRetryPlan? retry;
+        lock (_statusGate)
+        {
+            retry = _retryPlan;
+        }
+
+        if (retry is not null)
+        {
+            await events.WriteAsync(new OperationalEventWrite(
+                "codespace_proxy.retry.manual",
+                OperationalEventSeverity.Information,
+                "Manual Codespace proxy retry requested.",
+                NodeId: retry.AccountId,
+                Details: new { retry.CodespaceName, retry.Attempt }),
+                cancellationToken);
+            return await StartCodespaceProxyAsync(retry.AccountId, retry.CodespaceName, retry.ProfileId, cancellationToken);
+        }
+
+        var latest = await GetLatestCodespaceSessionAsync(failedOnly: false, cancellationToken);
+        if (latest is not null)
+        {
+            await events.WriteAsync(new OperationalEventWrite(
+                "codespace_proxy.retry.manual",
+                OperationalEventSeverity.Information,
+                "Manual Codespace proxy retry requested from the latest saved session.",
+                NodeId: latest.AccountId,
+                Details: new { latest.CodespaceName, latest.ProfileId }),
+                cancellationToken);
+            return await StartCodespaceProxyAsync(latest.AccountId, latest.CodespaceName, latest.ProfileId, cancellationToken);
+        }
+
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.retry.manual",
+            OperationalEventSeverity.Information,
+            "Manual Codespace proxy retry requested; selecting an account and Codespace automatically."),
+            cancellationToken);
+        return await EnsureAutomaticCodespaceProxyAsync(cancellationToken);
+    }
+
+    public async Task RetryIfDueAsync(CancellationToken cancellationToken)
+    {
+        CodespaceRetryPlan? retry;
+        lock (_statusGate)
+        {
+            retry = _retryPlan is not null && _retryPlan.NextRetryAt <= clock.UtcNow ? _retryPlan : null;
+        }
+
+        if (retry is null)
+        {
+            await SchedulePersistedFailureRetryAsync(cancellationToken);
+            return;
+        }
+
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.retry.starting",
+            OperationalEventSeverity.Information,
+            "Retrying Codespace proxy startup.",
+            NodeId: retry.AccountId,
+            Details: new { retry.CodespaceName, retry.Attempt }),
+            cancellationToken);
+        await StartCodespaceProxyAsync(retry.AccountId, retry.CodespaceName, retry.ProfileId, cancellationToken);
+    }
+
+    private async Task SchedulePersistedFailureRetryAsync(CancellationToken cancellationToken)
+    {
+        if (_running is { IsStopped: false })
+        {
+            return;
+        }
+
+        lock (_statusGate)
+        {
+            if (_retryPlan is not null)
+            {
+                return;
+            }
+        }
+
+        var latest = await GetLatestCodespaceSessionAsync(failedOnly: true, cancellationToken);
+        if (latest is null)
+        {
+            return;
+        }
+
+        ScheduleRetry(
+            latest.AccountId,
+            latest.ProfileId,
+            latest.AccountUsername,
+            latest.CodespaceName,
+            latest.LastError ?? "Codespace proxy is down.");
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.retry.scheduled_from_saved_failure",
+            OperationalEventSeverity.Warning,
+            "Scheduled Codespace proxy retry from the latest saved failed session.",
+            NodeId: latest.AccountId,
+            Details: new { latest.ProfileId, latest.CodespaceName, latest.LastError }),
+            cancellationToken);
+    }
+
     private void SetAutomationStatus(
         string phase,
         Guid? accountId,
@@ -164,9 +324,38 @@ public sealed class LocalProxyRuntimeService(
     {
         lock (_statusGate)
         {
-            _automationStatus = new(phase, accountId, username, codespaceName, warning, nextRetryAt, error);
+            _automationStatus = new(phase, accountId, username, codespaceName, warning, nextRetryAt, error, _automationStatus.LastRequestAt);
         }
     }
+
+    private void ClearRetry()
+    {
+        lock (_statusGate)
+        {
+            _retryPlan = null;
+        }
+    }
+
+    private void ScheduleRetry(Guid accountId, Guid profileId, string? username, string codespaceName, string error)
+    {
+        var initialSeconds = Math.Clamp(_options.CodespaceRetryInitialSeconds, 5, 3600);
+        var maxSeconds = Math.Clamp(_options.CodespaceRetryMaxSeconds, initialSeconds, 86400);
+        lock (_statusGate)
+        {
+            var nextAttempt = _retryPlan is not null &&
+                              _retryPlan.AccountId == accountId &&
+                              string.Equals(_retryPlan.CodespaceName, codespaceName, StringComparison.OrdinalIgnoreCase)
+                ? _retryPlan.Attempt + 1
+                : 1;
+            var retrySeconds = Math.Min(maxSeconds, initialSeconds * (int)Math.Pow(2, Math.Min(nextAttempt - 1, 8)));
+            var retryAt = clock.UtcNow.AddSeconds(retrySeconds);
+            _retryPlan = new CodespaceRetryPlan(accountId, profileId, username, codespaceName, nextAttempt, retryAt, error);
+            _automationStatus = new("Retrying", accountId, username, codespaceName, _automationStatus.Warning, retryAt, error, _automationStatus.LastRequestAt);
+        }
+    }
+
+    private void ScheduleRetry(CodespaceProxyLaunch launch, Guid profileId, string error) =>
+        ScheduleRetry(launch.AccountId, profileId, launch.Username, launch.CodespaceName, error);
 
     private async Task<LocalProxyStartResult> StartInternalAsync(Guid profileId, CodespaceProxyLaunch? codespace, bool attachPublicListener, CancellationToken cancellationToken)
     {
@@ -203,7 +392,10 @@ public sealed class LocalProxyRuntimeService(
                 LocalPort = publicPort,
                 SocksPort = publicPort,
                 StartedAt = clock.UtcNow,
-                LastActivityAt = clock.UtcNow
+                LastActivityAt = clock.UtcNow,
+                AccountId = codespace?.AccountId,
+                CodespaceName = codespace?.CodespaceName,
+                RemoteProxyPort = codespace?.RemoteProxyPort
             };
 
             db.LocalProxySessions.Add(session);
@@ -229,6 +421,7 @@ public sealed class LocalProxyRuntimeService(
                 session.LastError = portError;
                 profile.Status = LocalProxyProfileStatus.Error;
                 await db.SaveChangesAsync(cancellationToken);
+                SetAutomationStatus("Error", codespace?.AccountId, codespace?.Username, codespace?.CodespaceName, _automationStatus.Warning, portError);
                 await events.WriteAsync(new OperationalEventWrite(
                     "local_proxy.port.unavailable",
                     OperationalEventSeverity.Error,
@@ -290,15 +483,6 @@ public sealed class LocalProxyRuntimeService(
                     throw new InvalidOperationException(message);
                 }
 
-                if (attachPublicListener)
-                {
-                    mixedListener = MixedProxyListener.Start(listenerBindHost, publicPort, internalHttpPort, internalSocksPort, logger);
-                    if (!await WaitForPublicPortAsync(publicPort, TimeSpan.FromSeconds(4), cancellationToken))
-                    {
-                        throw new InvalidOperationException("Mixed HTTP/SOCKS listener did not open the public port in time.");
-                    }
-                }
-
                 var state = new RunningLocalProxy(
                     profile.Id,
                     profile.Name,
@@ -318,10 +502,34 @@ public sealed class LocalProxyRuntimeService(
                     accessLogPath,
                     errorLogPath,
                     codespace?.AccountId,
+                    codespace?.Username,
                     codespace?.CodespaceName,
                     codespace?.RemoteProxyPort,
                     tunnelPort);
                 state.LastActivityAt = session.LastActivityAt;
+
+                var readinessErrors = await ProbeRuntimeAsync(state, cancellationToken);
+                if (readinessErrors.Count > 0)
+                {
+                    throw new InvalidOperationException($"Readiness probe failed: {string.Join(" ", readinessErrors)}");
+                }
+
+                if (attachPublicListener)
+                {
+                    mixedListener = MixedProxyListener.Start(
+                        listenerBindHost,
+                        publicPort,
+                        internalHttpPort,
+                        internalSocksPort,
+                        logger,
+                        ct => RecordPublicRequestAsync(state, ct));
+                    state.AttachMixedListener(mixedListener);
+                    if (!await WaitForPublicPortAsync(publicPort, TimeSpan.FromSeconds(4), cancellationToken))
+                    {
+                        throw new InvalidOperationException("Mixed HTTP/SOCKS listener did not open the public port in time.");
+                    }
+                }
+
                 _running = state;
                 _ = Task.Run(() => MonitorProcessAsync(state), CancellationToken.None);
                 if (tunnelProcess is not null)
@@ -337,6 +545,7 @@ public sealed class LocalProxyRuntimeService(
                 {
                     SetAutomationStatus("Running", codespace.AccountId, codespace.Username, codespace.CodespaceName, _automationStatus.Warning, null);
                 }
+                ClearRetry();
 
                 await events.WriteAsync(new OperationalEventWrite(
                     "local_proxy.xray.started",
@@ -349,10 +558,7 @@ public sealed class LocalProxyRuntimeService(
                     Details: new { ProfileId = profile.Id, SessionId = session.Id, handle.ProcessId, PublicPort = publicPort, GatewayMode = !attachPublicListener, internalHttpPort, internalSocksPort, tunnelPort, codespace?.CodespaceName }),
                     cancellationToken);
 
-                var probe = await ProbeActiveAsync(cancellationToken);
-                return probe.Succeeded
-                    ? LocalProxyStartResult.Ok("Codespace-backed proxy is ready.", probe.Session)
-                    : LocalProxyStartResult.Ok($"Proxy is listening, but probe failed: {probe.Message}", probe.Session);
+                return LocalProxyStartResult.Ok("Codespace-backed proxy is ready.", await ToResponseAsync(state, cancellationToken));
             }
             catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or SocketException)
             {
@@ -371,7 +577,14 @@ public sealed class LocalProxyRuntimeService(
                 session.LastError = ex.Message;
                 profile.Status = LocalProxyProfileStatus.Error;
                 await db.SaveChangesAsync(cancellationToken);
-                SetAutomationStatus("Error", codespace?.AccountId, codespace?.Username, codespace?.CodespaceName, _automationStatus.Warning, ex.Message);
+                if (codespace is not null)
+                {
+                    ScheduleRetry(codespace, profile.Id, ex.Message);
+                }
+                else
+                {
+                    SetAutomationStatus("Error", null, null, null, _automationStatus.Warning, ex.Message);
+                }
                 await events.WriteAsync(new OperationalEventWrite(
                     "local_proxy.start.failed",
                     OperationalEventSeverity.Error,
@@ -401,6 +614,8 @@ public sealed class LocalProxyRuntimeService(
             var running = _running;
             if (running is null || running.IsStopped)
             {
+                ClearRetry();
+                SetAutomationStatus("Stopped", null, null, null, reason, null);
                 await events.WriteAsync(new OperationalEventWrite(
                     "local_proxy.stop.none",
                     OperationalEventSeverity.Warning,
@@ -421,6 +636,7 @@ public sealed class LocalProxyRuntimeService(
             await PersistStoppedAsync(running, reason, LocalProxySessionStatus.Stopped, cancellationToken);
             await StopBackingCodespaceAsync(running, reason, cancellationToken);
             SetAutomationStatus(IsIdleStopReason(reason) ? "ZzzIdle" : "Stopped", running.AccountId, null, running.CodespaceName, reason, null);
+            ClearRetry();
             var response = await ToResponseAsync(running, cancellationToken);
             _running = null;
             await events.WriteAsync(new OperationalEventWrite(
@@ -445,50 +661,7 @@ public sealed class LocalProxyRuntimeService(
             return new LocalProxyRuntimeResult(false, "No local proxy session is running.", null);
         }
 
-        var errors = new List<string>();
-        try
-        {
-            await ProbeHttpAsync(running, cancellationToken);
-            await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.probe.http.success",
-                OperationalEventSeverity.Information,
-                "Local Xray HTTP proxy probe succeeded.",
-                Details: new { running.ProfileId, running.SessionId, running.HttpPort }),
-                cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"HTTP: {ex.Message}");
-            await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.probe.http.failure",
-                OperationalEventSeverity.Error,
-                "Local Xray HTTP proxy probe failed.",
-                StandardError: ex.Message,
-                Details: new { running.ProfileId, running.SessionId, running.HttpPort }),
-                cancellationToken);
-        }
-
-        try
-        {
-            await ProbeSocksAsync(running, cancellationToken);
-            await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.probe.socks.success",
-                OperationalEventSeverity.Information,
-                "Local Xray SOCKS proxy probe succeeded.",
-                Details: new { running.ProfileId, running.SessionId, running.SocksPort }),
-                cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"SOCKS: {ex.Message}");
-            await events.WriteAsync(new OperationalEventWrite(
-                "local_proxy.probe.socks.failure",
-                OperationalEventSeverity.Error,
-                "Local Xray SOCKS proxy probe failed.",
-                StandardError: ex.Message,
-                Details: new { running.ProfileId, running.SessionId, running.SocksPort }),
-                cancellationToken);
-        }
+        var errors = await ProbeRuntimeAsync(running, cancellationToken);
 
         await RefreshRuntimeStatsAsync(running, cancellationToken);
         if (errors.Count == 0)
@@ -499,7 +672,58 @@ public sealed class LocalProxyRuntimeService(
 
         var message = string.Join(" ", errors);
         await SetLastErrorAsync(running, message, cancellationToken);
+        await MarkRunningFailedAsync(running, $"Local Xray proxy probe failed: {message}", cancellationToken);
         return new LocalProxyRuntimeResult(false, $"Local Xray proxy probe failed: {message}", await ToResponseAsync(running, cancellationToken));
+    }
+
+    private async Task<IReadOnlyList<string>> ProbeRuntimeAsync(RunningLocalProxy running, CancellationToken cancellationToken)
+    {
+        var errors = new List<string>();
+        try
+        {
+            await ProbeHttpAsync(running, cancellationToken);
+            await events.WriteAsync(new OperationalEventWrite(
+                "local_proxy.probe.http.success",
+                OperationalEventSeverity.Information,
+                "Local Xray HTTP proxy probe succeeded.",
+                Details: new { running.ProfileId, running.SessionId, running.ProbeHttpPort }),
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"HTTP: {ex.Message}");
+            await events.WriteAsync(new OperationalEventWrite(
+                "local_proxy.probe.http.failure",
+                OperationalEventSeverity.Error,
+                "Local Xray HTTP proxy probe failed.",
+                StandardError: ex.Message,
+                Details: new { running.ProfileId, running.SessionId, running.ProbeHttpPort }),
+                cancellationToken);
+        }
+
+        try
+        {
+            await ProbeSocksAsync(running, cancellationToken);
+            await events.WriteAsync(new OperationalEventWrite(
+                "local_proxy.probe.socks.success",
+                OperationalEventSeverity.Information,
+                "Local Xray SOCKS proxy probe succeeded.",
+                Details: new { running.ProfileId, running.SessionId, running.ProbeSocksPort }),
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"SOCKS: {ex.Message}");
+            await events.WriteAsync(new OperationalEventWrite(
+                "local_proxy.probe.socks.failure",
+                OperationalEventSeverity.Error,
+                "Local Xray SOCKS proxy probe failed.",
+                StandardError: ex.Message,
+                Details: new { running.ProfileId, running.SessionId, running.ProbeSocksPort }),
+                cancellationToken);
+        }
+
+        return errors;
     }
 
     public async Task<LocalProxyRuntimeState?> GetActiveAsync(CancellationToken cancellationToken)
@@ -564,13 +788,13 @@ public sealed class LocalProxyRuntimeService(
             running.MarkStopped();
             await SetLastErrorAsync(running, running.Process.StandardError, CancellationToken.None);
             await PersistStoppedAsync(running, "Xray process exited unexpectedly.", LocalProxySessionStatus.Error, CancellationToken.None);
-            SetAutomationStatus("Error", running.AccountId, null, running.CodespaceName, null, "Xray process exited unexpectedly.");
             if (running.MixedListener is not null)
             {
                 await running.MixedListener.DisposeAsync();
             }
 
             StopProcess(running.TunnelProcess);
+            ScheduleRetryIfCodespaceRuntime(running, "Xray process exited unexpectedly.");
             if (ReferenceEquals(_running, running))
             {
                 _running = null;
@@ -609,13 +833,13 @@ public sealed class LocalProxyRuntimeService(
             running.MarkStopped();
             await SetLastErrorAsync(running, "Codespace SSH tunnel exited unexpectedly.", CancellationToken.None);
             await PersistStoppedAsync(running, "Codespace SSH tunnel exited unexpectedly.", LocalProxySessionStatus.Error, CancellationToken.None);
-            SetAutomationStatus("Disconnected", running.AccountId, null, running.CodespaceName, "The Codespace tunnel disconnected. The next proxy request will reconnect automatically.", "Codespace tunnel exited unexpectedly.");
             if (running.MixedListener is not null)
             {
                 await running.MixedListener.DisposeAsync();
             }
 
             await running.Process.StopAsync();
+            ScheduleRetryIfCodespaceRuntime(running, "Codespace tunnel exited unexpectedly.");
             if (ReferenceEquals(_running, running))
             {
                 _running = null;
@@ -631,6 +855,65 @@ public sealed class LocalProxyRuntimeService(
         catch (Exception ex)
         {
             logger.LogError(ex, "Failed to monitor Codespace SSH tunnel process.");
+        }
+    }
+
+    private void ScheduleRetryIfCodespaceRuntime(RunningLocalProxy running, string error)
+    {
+        if (running.AccountId is not null && !string.IsNullOrWhiteSpace(running.CodespaceName))
+        {
+            ScheduleRetry(running.AccountId.Value, running.ProfileId, running.AccountUsername, running.CodespaceName, error);
+            return;
+        }
+
+        SetAutomationStatus("Error", running.AccountId, running.AccountUsername, running.CodespaceName, null, error);
+    }
+
+    private async Task<SavedCodespaceProxySession?> GetLatestCodespaceSessionAsync(bool failedOnly, CancellationToken cancellationToken)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var sessions = await db.LocalProxySessions
+            .AsNoTracking()
+            .Where(x => x.AccountId != null && x.CodespaceName != null && x.CodespaceName != "")
+            .ToListAsync(cancellationToken);
+        var latest = sessions
+            .Where(x => !failedOnly || x.Status == LocalProxySessionStatus.Error)
+            .OrderByDescending(x => x.StartedAt)
+            .FirstOrDefault();
+        if (latest?.AccountId is null || string.IsNullOrWhiteSpace(latest.CodespaceName))
+        {
+            return null;
+        }
+
+        var username = await db.GitHubAccounts
+            .AsNoTracking()
+            .Where(x => x.Id == latest.AccountId.Value)
+            .Select(x => x.Username)
+            .FirstOrDefaultAsync(cancellationToken);
+        return new SavedCodespaceProxySession(
+            latest.ProfileId,
+            latest.AccountId.Value,
+            username,
+            latest.CodespaceName,
+            latest.LastError);
+    }
+
+    private async Task MarkRunningFailedAsync(RunningLocalProxy running, string reason, CancellationToken cancellationToken)
+    {
+        running.MarkStopped();
+        if (running.MixedListener is not null)
+        {
+            await running.MixedListener.DisposeAsync();
+        }
+
+        await running.Process.StopAsync();
+        StopProcess(running.TunnelProcess);
+        await PersistStoppedAsync(running, reason, LocalProxySessionStatus.Error, cancellationToken);
+        ScheduleRetryIfCodespaceRuntime(running, reason);
+        if (ReferenceEquals(_running, running))
+        {
+            _running = null;
         }
     }
 
@@ -1095,6 +1378,7 @@ public sealed class LocalProxyRuntimeService(
 
         running.TotalRequests = requestCount;
         running.LastActivityAt = File.GetLastWriteTimeUtc(running.AccessLogPath);
+        running.LastRequestAt = running.LastActivityAt;
 
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -1105,6 +1389,7 @@ public sealed class LocalProxyRuntimeService(
         }
 
         session.LastActivityAt = running.LastActivityAt;
+        session.LastRequestAt = running.LastRequestAt;
         session.TotalRequests = running.TotalRequests;
         await db.SaveChangesAsync(cancellationToken);
         await events.WriteAsync(new OperationalEventWrite(
@@ -1126,6 +1411,11 @@ public sealed class LocalProxyRuntimeService(
             session.Status = status;
             session.StoppedAt = clock.UtcNow;
             session.LastError = status == LocalProxySessionStatus.Error ? reason : session.LastError;
+            session.LastActivityAt = running.LastActivityAt;
+            session.LastRequestAt = running.LastRequestAt;
+            session.AccountId = running.AccountId;
+            session.CodespaceName = running.CodespaceName;
+            session.RemoteProxyPort = running.RemoteProxyPort;
             session.TotalRequests = running.TotalRequests;
             session.TotalConnectTunnels = 0;
             session.TotalBytesReceived = 0;
@@ -1152,6 +1442,24 @@ public sealed class LocalProxyRuntimeService(
         }
 
         session.LastError = error;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task RecordPublicRequestAsync(RunningLocalProxy running, CancellationToken cancellationToken)
+    {
+        var now = clock.UtcNow;
+        running.LastRequestAt = now;
+        running.LastActivityAt = now;
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var session = await db.LocalProxySessions.FirstOrDefaultAsync(x => x.Id == running.SessionId, cancellationToken);
+        if (session is null)
+        {
+            return;
+        }
+
+        session.LastRequestAt = now;
+        session.LastActivityAt = now;
         await db.SaveChangesAsync(cancellationToken);
     }
 
@@ -1195,6 +1503,7 @@ public sealed class LocalProxyRuntimeService(
             socksProxyUrl,
             session.StartedAt,
             session.LastActivityAt,
+            session.LastRequestAt,
             idleAt,
             session.StoppedAt,
             session.LastError,
@@ -1203,9 +1512,9 @@ public sealed class LocalProxyRuntimeService(
             session.TotalBytesReceived,
             session.TotalBytesSent,
             activeConnections,
-            accountId,
-            codespaceName,
-            remoteProxyPort,
+            accountId ?? session.AccountId,
+            codespaceName ?? session.CodespaceName,
+            remoteProxyPort ?? session.RemoteProxyPort,
             localTunnelPort);
     }
 
@@ -1288,6 +1597,16 @@ public sealed class LocalProxyRuntimeService(
         state.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
         state.Equals("Provisioning", StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsStartingAutomationPhase(string phase) =>
+        phase.Equals("Starting", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("StartingCodespace", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("SelectingAccount", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("Selected", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("Connecting", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("EnsuringRemoteProxy", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("OpeningTunnel", StringComparison.OrdinalIgnoreCase) ||
+        phase.Equals("TunnelReady", StringComparison.OrdinalIgnoreCase);
+
     private static bool IsIdleStopReason(string reason) =>
         reason.Contains("idle", StringComparison.OrdinalIgnoreCase);
 
@@ -1347,6 +1666,7 @@ public sealed class LocalProxyRuntimeService(
         string accessLogPath,
         string errorLogPath,
         Guid? accountId,
+        string? accountUsername,
         string? codespaceName,
         int? remoteProxyPort,
         int? localTunnelPort)
@@ -1367,19 +1687,26 @@ public sealed class LocalProxyRuntimeService(
         public string? ProxyPassword { get; } = proxyPassword;
         public int IdleShutdownMinutes { get; } = idleShutdownMinutes;
         public XrayProcessHandle Process { get; } = process;
-        public MixedProxyListener? MixedListener { get; } = mixedListener;
+        public MixedProxyListener? MixedListener { get; private set; } = mixedListener;
         public Process? TunnelProcess { get; } = tunnelProcess;
         public string ConfigPath { get; } = configPath;
         public string AccessLogPath { get; } = accessLogPath;
         public string ErrorLogPath { get; } = errorLogPath;
         public Guid? AccountId { get; } = accountId;
+        public string? AccountUsername { get; } = accountUsername;
         public string? CodespaceName { get; } = codespaceName;
         public int? RemoteProxyPort { get; } = remoteProxyPort;
         public int? LocalTunnelPort { get; } = localTunnelPort;
         public bool RequiresAuthentication => !string.IsNullOrWhiteSpace(ProxyUsername) && !string.IsNullOrWhiteSpace(ProxyPassword);
         public bool IsStopped => _stopped;
         public DateTimeOffset LastActivityAt;
+        public DateTimeOffset? LastRequestAt;
         public long TotalRequests;
+
+        public void AttachMixedListener(MixedProxyListener listener)
+        {
+            MixedListener = listener;
+        }
 
         public void MarkStopped()
         {
@@ -1401,6 +1728,7 @@ public sealed record LocalProxyRuntimeState(
     string SocksProxyUrl,
     DateTimeOffset StartedAt,
     DateTimeOffset LastActivityAt,
+    DateTimeOffset? LastRequestAt,
     DateTimeOffset IdleShutdownAt,
     DateTimeOffset? StoppedAt,
     string? LastError,
@@ -1425,7 +1753,8 @@ public sealed record LocalProxyAutomationRuntimeStatus(
     string? CodespaceName,
     string? Warning,
     DateTimeOffset? NextRetryAt,
-    string? LastError);
+    string? LastError,
+    DateTimeOffset? LastRequestAt = null);
 
 public sealed record LocalProxyStartResult(bool Succeeded, string Message, LocalProxyRuntimeState? Session)
 {
@@ -1440,3 +1769,19 @@ public sealed record CodespaceProxyLaunch(
     string CodespaceName,
     int RemoteProxyPort,
     bool StopCodespaceOnStartFailure);
+
+public sealed record CodespaceRetryPlan(
+    Guid AccountId,
+    Guid ProfileId,
+    string? Username,
+    string CodespaceName,
+    int Attempt,
+    DateTimeOffset NextRetryAt,
+    string LastError);
+
+public sealed record SavedCodespaceProxySession(
+    Guid ProfileId,
+    Guid AccountId,
+    string? AccountUsername,
+    string CodespaceName,
+    string? LastError);

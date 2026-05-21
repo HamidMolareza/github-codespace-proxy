@@ -212,6 +212,152 @@ public sealed class GitHubCodespaceServiceTests
         }
     }
 
+    [Fact]
+    public async Task GetUsageAsync_AppliesFreePlanQuotaAndWarningState()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = new GitHubAccount
+            {
+                DisplayName = "Primary",
+                Username = "octocat",
+                ProtectedPersonalAccessToken = "token",
+                Plan = "Free",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            db.GitHubAccounts.Add(account);
+            await db.SaveChangesAsync();
+            var github = new FakeGitHubApiClient
+            {
+                Usage = new GitHubUsageResponse(
+                    GitHubAccountQuotaState.Healthy,
+                    "ok",
+                    110,
+                    "core hours",
+                    0,
+                    "billing",
+                    [
+                        new GitHubUsageQuotaSummaryResponse("Compute", 110, null, null, null, "core hours"),
+                        new GitHubUsageQuotaSummaryResponse("Storage", 10, null, null, null, "GB-month")
+                    ])
+            };
+            var service = CreateService(db, github);
+
+            var usage = await service.GetUsageAsync(account.Id, CancellationToken.None);
+
+            Assert.Equal(GitHubAccountQuotaState.Warning, usage.State);
+            Assert.Equal(GitHubAccountQuotaState.Warning, account.QuotaState);
+            var compute = Assert.Single(usage.Quotas, x => x.Name == "Compute");
+            Assert.Equal(120m, compute.Limit);
+            Assert.Equal(10m, compute.Remaining);
+            Assert.Equal(91.7m, compute.PercentUsed);
+            var storage = Assert.Single(usage.Quotas, x => x.Name == "Storage");
+            Assert.Equal(15m, storage.Limit);
+            Assert.Equal(5m, storage.Remaining);
+            Assert.Equal(66.7m, storage.PercentUsed);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task GetUsageAsync_MarksProPlanLimitedWhenQuotaIsExhausted()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = new GitHubAccount
+            {
+                DisplayName = "Primary",
+                Username = "octocat",
+                ProtectedPersonalAccessToken = "token",
+                Plan = "Pro",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            db.GitHubAccounts.Add(account);
+            await db.SaveChangesAsync();
+            var github = new FakeGitHubApiClient
+            {
+                Usage = new GitHubUsageResponse(
+                    GitHubAccountQuotaState.Healthy,
+                    "ok",
+                    181,
+                    "core hours",
+                    0,
+                    "billing",
+                    [new GitHubUsageQuotaSummaryResponse("Compute", 181, null, null, null, "core hours")])
+            };
+            var service = CreateService(db, github);
+
+            var usage = await service.GetUsageAsync(account.Id, CancellationToken.None);
+
+            Assert.Equal(GitHubAccountQuotaState.Limited, usage.State);
+            var compute = Assert.Single(usage.Quotas);
+            Assert.Equal(180m, compute.Limit);
+            Assert.Equal(0m, compute.Remaining);
+            Assert.Equal(100.6m, compute.PercentUsed);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExportAsync_ReturnsRejectedLatestFailureDetails()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = new GitHubAccount
+            {
+                DisplayName = "Primary",
+                Username = "octocat",
+                ProtectedPersonalAccessToken = "token",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            db.GitHubAccounts.Add(account);
+            await db.SaveChangesAsync();
+            var github = new FakeGitHubApiClient
+            {
+                ThrowExportValidation = true,
+                LatestExport = new GitHubCodespaceExportRemote("latest", "failed", "https://api.github.com/export/latest", null, DateTimeOffset.UtcNow)
+            };
+            var service = CreateService(db, github);
+
+            var result = await service.ExportAsync(account.Id, "fresh", CancellationToken.None);
+
+            Assert.False(result.AcceptedNewExport);
+            Assert.Equal("failed", result.Export.State);
+            Assert.Contains("Validation Failed", result.RejectionMessage, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
     private static GitHubCodespaceService CreateService(AppDbContext db, IGitHubApiClient github)
     {
         var clock = new TestClock();
@@ -230,9 +376,19 @@ public sealed class GitHubCodespaceServiceTests
     private sealed class FakeGitHubApiClient : IGitHubApiClient
     {
         public IReadOnlyList<GitHubCodespaceRemote> Codespaces { get; init; } = [];
+        public GitHubUsageResponse Usage { get; init; } = new(
+            GitHubAccountQuotaState.Healthy,
+            "ok",
+            10,
+            "minutes",
+            0,
+            "https://github.com/settings/billing/usage",
+            []);
+        public GitHubCodespaceExportRemote? LatestExport { get; init; } = new("latest-export-id", "succeeded", "https://api.github.com/export/latest", "https://github.com/export/latest", DateTimeOffset.UtcNow);
         public int CreateCalls { get; private set; }
         public int StartCalls { get; private set; }
         public bool ThrowStartConflict { get; init; }
+        public bool ThrowExportValidation { get; init; }
 
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult(new GitHubUserProfile("octocat"));
@@ -269,11 +425,21 @@ public sealed class GitHubCodespaceServiceTests
         public Task DeleteCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubCodespaceExportRemote("export-id", "pending", "https://api.github.com/export", "https://github.com/export", null));
+        public Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken)
+        {
+            if (ThrowExportValidation)
+            {
+                throw new GitHubApiException(HttpStatusCode.UnprocessableEntity, "GitHub API returned 422 Unprocessable Entity. Validation Failed.", "{}");
+            }
+
+            return Task.FromResult(new GitHubCodespaceExportRemote("export-id", "pending", "https://api.github.com/export", "https://github.com/export", null));
+        }
+
+        public Task<GitHubCodespaceExportRemote?> GetLatestCodespaceExportAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
+            Task.FromResult(LatestExport);
 
         public Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 10, "minutes", 0, "https://github.com/settings/billing/usage"));
+            Task.FromResult(Usage);
     }
 
     private sealed class PassThroughSecretProtector : ISecretProtector

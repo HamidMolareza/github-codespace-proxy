@@ -13,6 +13,8 @@ public sealed class LocalProxyOptions
     public int CodespaceRemoteProxyStartupTimeoutSeconds { get; set; } = 120;
     public int CodespaceTunnelReadyTimeoutSeconds { get; set; } = 30;
     public int CodespaceStartTimeoutSeconds { get; set; } = 180;
+    public int CodespaceRetryInitialSeconds { get; set; } = 15;
+    public int CodespaceRetryMaxSeconds { get; set; } = 300;
     public bool CodespaceEnsureRemoteProxy { get; set; }
     public string CodespaceRepositoryOwner { get; set; } = "wproxy97";
     public string CodespaceRepositoryName { get; set; } = "proxy2";

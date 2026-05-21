@@ -77,6 +77,7 @@ public sealed class LocalProxyGatewayService(
             }
 
             var firstByte = firstByteBuffer[0];
+            await runtime.RecordGatewayRequestAsync(cancellationToken);
             var target = await runtime.GetOrStartGatewayTargetAsync(cancellationToken);
             var targetPort = firstByte == 0x05 ? target.InternalSocksPort : target.InternalHttpPort;
             using var upstream = new TcpClient();

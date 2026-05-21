@@ -39,7 +39,17 @@ The app uses Codespaces as the proxy backend only for accounts you add and autho
 4. Keep `Proxy port` as `8910` unless that port is already in use.
 5. Set username/password only if you want proxy authentication.
 6. Send traffic to the proxy port. The backend selects the lowest-usage account, ensures the `wproxy97/proxy2` fork and Codespace exist, starts/resumes the Codespace, opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`, starts Xray through that hidden tunnel, and serves the waiting request.
-7. Watch the Codespace Proxy panel and Activity tab for selected account, selected Codespace, tunnel, Xray, probe, reconnect, and idle-stop events.
+7. Watch the Codespace Proxy panel and Activity tab for selected account, selected Codespace, tunnel, Xray, probe, retry, reconnect, and idle-stop events.
+
+The Automation Status card distinguishes `Up`, `Starting`, `Retrying`, `Idle`, and `Down`. It also shows the latest request time, idle duration, idle-stop countdown, retry countdown, selected account, and selected Codespace when available.
+
+Manual retry:
+
+```bash
+curl -X POST http://127.0.0.1:5080/api/local-proxy/retry
+```
+
+Use this when the panel is `Down`, `Retrying`, or `Idle` and you want to restart immediately instead of waiting for traffic or the retry timer.
 
 Manual probe:
 
@@ -107,11 +117,19 @@ Remove persisted app data only when you intentionally want a clean database:
 docker compose down -v
 ```
 
-## Idle Auto-Stop
+## Idle Auto-Stop And Recovery
 
 `LocalProxyIdleShutdownService` stops the active local Xray proxy and the backing Codespace when there are no observed Xray access-log requests for the profile idle window. The gateway remains bound, so the next proxy request starts a fresh backend automatically.
 
 The default idle window is stored per profile and defaults to 30 minutes.
+
+If the app restarts while an in-memory Codespace-backed proxy session is active, startup recovery attempts to restart the last saved Codespace session. If GitHub, internet, tunnel, or local probe failures occur, the backend schedules exponential retries and reports `Retrying` plus the countdown in `/api/local-proxy/status`.
+
+Status check:
+
+```bash
+curl http://127.0.0.1:5080/api/local-proxy/status
+```
 
 ## Observability
 
@@ -138,7 +156,19 @@ Use the Activity tab Clear button, or call `DELETE /api/activity`, to delete per
 
 The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The automatic proxy startup then uses `gh codespace ports forward` to reproduce the stable `sp-proxy` tunnel shape: remote `127.0.0.1:8899` to a hidden local tunnel port, then Xray behind the public gateway port.
 
-During startup, the backend verifies `gh codespace ssh -c <codespace> true`, then opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`. Remote proxy verification/startup is skipped by default because the working manual `sp-proxy` flow expects the Codespace proxy to already listen on `8899`; set `LocalProxy__CodespaceEnsureRemoteProxy=true` to ask the app to run the configured `proxy` command inside the Codespace first. If the tunnel exits unexpectedly, the panel reports `Disconnected`, and the next proxy request triggers selection and startup again. If the idle window is reached, the panel reports `ZzzIdle` and the backing Codespace is stopped to save usage.
+During startup, the backend verifies `gh codespace ssh -c <codespace> true`, then opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`. Remote proxy verification/startup is skipped by default because the working manual `sp-proxy` flow expects the Codespace proxy to already listen on `8899`; set `LocalProxy__CodespaceEnsureRemoteProxy=true` to ask the app to run the configured `proxy` command inside the Codespace first. If the tunnel exits unexpectedly, the panel reports `Retrying` or `Down`, and the next proxy request or manual Retry triggers startup again. If the idle window is reached, the panel reports `Idle`/`ZzzIdle` and the backing Codespace is stopped to save usage.
+
+## UI Preferences
+
+The selected tab is stored in the URL. For example, refresh `http://127.0.0.1:5173/?tab=local-proxy` to return directly to the Codespace Proxy tab.
+
+The theme selector in the top bar supports:
+
+- `System`: follow `prefers-color-scheme`.
+- `Light`: force the light theme.
+- `Dark`: force the dark theme.
+
+The selected theme is stored in browser `localStorage` as `gh-proxy.theme`.
 
 ## Git Commands In This Workspace
 

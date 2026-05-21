@@ -8,16 +8,18 @@ public sealed class MixedProxyListener : IAsyncDisposable
     private readonly TcpListener _listener;
     private readonly int _httpPort;
     private readonly int _socksPort;
+    private readonly Func<CancellationToken, Task>? _requestObserved;
     private readonly ILogger _logger;
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _acceptLoop;
     private long _activeConnections;
 
-    private MixedProxyListener(IPAddress bindAddress, int publicPort, int httpPort, int socksPort, ILogger logger)
+    private MixedProxyListener(IPAddress bindAddress, int publicPort, int httpPort, int socksPort, Func<CancellationToken, Task>? requestObserved, ILogger logger)
     {
         _listener = new TcpListener(bindAddress, publicPort);
         _httpPort = httpPort;
         _socksPort = socksPort;
+        _requestObserved = requestObserved;
         _logger = logger;
         _listener.Start();
         _acceptLoop = Task.Run(AcceptLoopAsync);
@@ -25,8 +27,8 @@ public sealed class MixedProxyListener : IAsyncDisposable
 
     public int ActiveConnections => (int)Interlocked.Read(ref _activeConnections);
 
-    public static MixedProxyListener Start(string bindHost, int publicPort, int httpPort, int socksPort, ILogger logger) =>
-        new(ResolveBindAddress(bindHost), publicPort, httpPort, socksPort, logger);
+    public static MixedProxyListener Start(string bindHost, int publicPort, int httpPort, int socksPort, ILogger logger, Func<CancellationToken, Task>? requestObserved = null) =>
+        new(ResolveBindAddress(bindHost), publicPort, httpPort, socksPort, requestObserved, logger);
 
     public async ValueTask DisposeAsync()
     {
@@ -77,6 +79,11 @@ public sealed class MixedProxyListener : IAsyncDisposable
             if (firstByte < 0)
             {
                 return;
+            }
+
+            if (_requestObserved is not null)
+            {
+                await _requestObserved(cancellationToken);
             }
 
             var targetPort = firstByte == 0x05 ? _socksPort : _httpPort;

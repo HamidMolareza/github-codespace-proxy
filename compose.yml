@@ -11,6 +11,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://127.0.0.1:5080
+      TZ: Asia/Tehran
       HOME: /app/data/home
       ConnectionStrings__Default: Data Source=/app/data/gh-proxy.db
       Observability__LogDirectory: /app/data/logs
@@ -43,6 +44,7 @@ services:
     environment:
       PORT: 5173
       API_BASE_URL: http://127.0.0.1:5080
+      TZ: Asia/Tehran
     depends_on:
       backend:
         condition: service_healthy

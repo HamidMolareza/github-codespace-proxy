@@ -6,6 +6,8 @@ namespace GhProxy.Api.Services;
 
 public sealed class DatabaseSchemaInitializer(AppDbContext db)
 {
+    public const string RestartedActiveSessionMessage = "The application restarted while this in-memory local proxy session was active.";
+
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         await db.Database.EnsureCreatedAsync(cancellationToken);
@@ -117,8 +119,12 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
                 "SocksPort" INTEGER NOT NULL DEFAULT 8910,
                 "StartedAt" TEXT NOT NULL,
                 "LastActivityAt" TEXT NOT NULL,
+                "LastRequestAt" TEXT NULL,
                 "StoppedAt" TEXT NULL,
                 "LastError" TEXT NULL,
+                "AccountId" TEXT NULL,
+                "CodespaceName" TEXT NULL,
+                "RemoteProxyPort" INTEGER NULL,
                 "TotalRequests" INTEGER NOT NULL,
                 "TotalConnectTunnels" INTEGER NOT NULL,
                 "TotalBytesReceived" INTEGER NOT NULL,
@@ -142,13 +148,17 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
             cancellationToken);
         await AddColumnIfMissingAsync("LocalProxyProfiles", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8910", cancellationToken);
         await AddColumnIfMissingAsync("LocalProxySessions", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8910", cancellationToken);
+        await AddColumnIfMissingAsync("LocalProxySessions", "LastRequestAt", "\"LastRequestAt\" TEXT NULL", cancellationToken);
+        await AddColumnIfMissingAsync("LocalProxySessions", "AccountId", "\"AccountId\" TEXT NULL", cancellationToken);
+        await AddColumnIfMissingAsync("LocalProxySessions", "CodespaceName", "\"CodespaceName\" TEXT NULL", cancellationToken);
+        await AddColumnIfMissingAsync("LocalProxySessions", "RemoteProxyPort", "\"RemoteProxyPort\" INTEGER NULL", cancellationToken);
         await NormalizeLocalProxySocksPortsAsync(cancellationToken);
-        await db.Database.ExecuteSqlRawAsync(
-            """
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
             UPDATE "LocalProxySessions"
             SET "Status" = 'Error',
                 "StoppedAt" = COALESCE("StoppedAt", CURRENT_TIMESTAMP),
-                "LastError" = COALESCE("LastError", 'The application restarted while this in-memory local proxy session was active.')
+                "LastError" = COALESCE("LastError", {RestartedActiveSessionMessage})
             WHERE "Status" IN ('Starting', 'Running', 'Stopping');
             """,
             cancellationToken);
