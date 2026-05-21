@@ -10,4 +10,5 @@ public sealed class LocalProxyOptions
     public int CodespaceRemoteProxyPort { get; set; } = 8899;
     public int CodespaceTunnelReadyTimeoutSeconds { get; set; } = 30;
     public int CodespaceStartTimeoutSeconds { get; set; } = 180;
+    public int CodespaceSshConfigTimeoutSeconds { get; set; } = 120;
 }

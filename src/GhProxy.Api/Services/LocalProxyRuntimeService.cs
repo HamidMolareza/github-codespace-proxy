@@ -737,27 +737,39 @@ public sealed class LocalProxyRuntimeService(
 
     private async Task<string> RefreshCodespacesSshConfigAsync(CodespaceProxyLaunch launch, Guid sessionId, CancellationToken cancellationToken)
     {
-        var result = await RunRequiredAsync(
-            "codespace.ssh.config",
-            ["codespace", "ssh", "--config"],
-            launch,
-            sessionId,
-            TimeSpan.FromSeconds(30),
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_options.CodespaceSshConfigTimeoutSeconds, 30, 600));
+        var sshDirectory = GetCodespacesSshConfigDirectory();
+        var target = Path.Combine(sshDirectory, $"{sessionId:N}.config");
+
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.ssh_config.refreshing",
+            OperationalEventSeverity.Information,
+            "Refreshing Codespaces SSH config for the selected Codespace.",
+            NodeId: launch.AccountId,
+            SessionId: sessionId,
+            Details: new { launch.Username, launch.CodespaceName, Path = target, TimeoutSeconds = (int)timeout.TotalSeconds }),
             cancellationToken);
 
-        var sshDirectory = GetCodespacesSshConfigDirectory();
+        var result = await RunRequiredAsync(
+            "codespace.ssh.config",
+            ["codespace", "ssh", "--config", "-c", launch.CodespaceName],
+            launch,
+            sessionId,
+            timeout,
+            cancellationToken);
+
         Directory.CreateDirectory(sshDirectory);
-        var target = Path.Combine(sshDirectory, $"{sessionId:N}.config");
         var temp = Path.Combine(sshDirectory, $"{sessionId:N}.{Guid.NewGuid():N}.tmp");
         await File.WriteAllTextAsync(temp, result.StandardOutput, cancellationToken);
         File.Move(temp, target, overwrite: true);
+        var lineCount = result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
         await events.WriteAsync(new OperationalEventWrite(
             "codespace_proxy.ssh_config.refreshed",
             OperationalEventSeverity.Information,
             "Refreshed Codespaces SSH config.",
             NodeId: launch.AccountId,
             SessionId: sessionId,
-            Details: new { Path = target }),
+            Details: new { Path = target, Bytes = result.StandardOutput.Length, Lines = lineCount, TimeoutSeconds = (int)timeout.TotalSeconds }),
             cancellationToken);
         return target;
     }

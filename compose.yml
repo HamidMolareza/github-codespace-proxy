@@ -18,6 +18,7 @@ services:
       LocalProxy__XrayExecutablePath: /usr/local/bin/xray
       LocalProxy__XrayConfigDirectory: /app/data/xray
       LocalProxy__CodespaceSshConfigDirectory: /app/data/codespaces-ssh
+      LocalProxy__CodespaceSshConfigTimeoutSeconds: 120
       GitHub__AutoStopIdleMinutes: 30
       GitHub__SyncIntervalSeconds: 300
     volumes:

@@ -47,6 +47,7 @@ public sealed class ProcessCommandRunnerTests
         var timeout = Assert.Single(sink.Events, x => x.EventType == "command.timeout");
         Assert.True(timeout.TimedOut);
         Assert.Equal(124, timeout.ExitCode);
+        Assert.NotNull(timeout.Details);
     }
 
     [Fact]

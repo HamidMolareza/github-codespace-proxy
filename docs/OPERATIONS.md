@@ -136,6 +136,8 @@ Secrets are redacted before command output, command display strings, details JSO
 
 The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The Run Proxy action then uses `gh` and OpenSSH to reproduce the stable `sp-proxy` tunnel shape: remote `127.0.0.1:8899` to a hidden local tunnel port, then Xray to the public mixed port.
 
+During startup, the backend verifies `gh codespace ssh -c <codespace> true`, refreshes OpenSSH config with `gh codespace ssh --config -c <codespace>`, probes the remote proxy port, then opens the native SSH tunnel. The config refresh timeout is controlled by `LocalProxy__CodespaceSshConfigTimeoutSeconds` and defaults to 120 seconds.
+
 ## Git Commands In This Workspace
 
 The sandbox has a read-only `.git` mount, so this implementation stores repository metadata under `.repo/git`.

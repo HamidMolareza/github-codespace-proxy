@@ -124,7 +124,8 @@ public sealed class ProcessCommandRunner(ILogger<ProcessCommandRunner> logger, I
                 ExitCode: 124,
                 Duration: stopwatch.Elapsed,
                 TimedOut: true,
-                StandardError: error),
+                StandardError: error,
+                Details: new { TimeoutSeconds = (int)timeout.TotalSeconds, ProcessId = process.Id }),
                 CancellationToken.None);
             return new CommandResult(124, "", error, TimedOut: true, Duration: stopwatch.Elapsed);
         }
