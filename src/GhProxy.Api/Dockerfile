@@ -53,7 +53,7 @@ RUN arch="$(dpkg --print-architecture)" \
 
 COPY --from=build /app/publish .
 
-RUN mkdir -p /app/data/home/.ssh /app/data/codespaces-ssh /app/data/xray /app/data/logs
+RUN mkdir -p /app/data/home/.ssh /app/data/xray /app/data/logs
 
 VOLUME ["/app/data"]
 EXPOSE 8080 8910

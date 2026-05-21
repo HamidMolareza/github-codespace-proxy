@@ -38,7 +38,7 @@ The app uses Codespaces as the proxy backend only for accounts you add and autho
 3. Keep `Bind host` as `127.0.0.1` for direct local runs.
 4. Keep `Proxy port` as `8910` unless that port is already in use.
 5. Set username/password only if you want proxy authentication.
-6. Send traffic to the proxy port. The backend selects the lowest-usage account, ensures the `wproxy97/proxy2` fork and Codespace exist, starts/resumes the Codespace, verifies remote proxy port `8899`, opens an OpenSSH tunnel, starts Xray, and serves the waiting request.
+6. Send traffic to the proxy port. The backend selects the lowest-usage account, ensures the `wproxy97/proxy2` fork and Codespace exist, starts/resumes the Codespace, opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`, starts Xray through that hidden tunnel, and serves the waiting request.
 7. Watch the Codespace Proxy panel and Activity tab for selected account, selected Codespace, tunnel, Xray, probe, reconnect, and idle-stop events.
 
 Manual probe:
@@ -82,7 +82,7 @@ Open:
 http://127.0.0.1:5173
 ```
 
-In Docker mode, Compose uses `network_mode: host` so Codespaces traffic follows the connected host VPN. Compose sets `LocalProxy__BindHostOverride=127.0.0.1` so the mixed listener remains local-only. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, and stores generated Codespaces SSH config under `/app/data/codespaces-ssh`.
+In Docker mode, Compose uses `network_mode: host` so Codespaces traffic follows the connected host VPN. Compose sets `LocalProxy__BindHostOverride=127.0.0.1` so the gateway remains local-only. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, and sets `HOME=/app/data/home`.
 
 Smoke test:
 
@@ -136,9 +136,9 @@ Use the Activity tab Clear button, or call `DELETE /api/activity`, to delete per
 
 ## GitHub Codespaces
 
-The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The automatic proxy startup then uses `gh` and OpenSSH to reproduce the stable `sp-proxy` tunnel shape: remote `127.0.0.1:8899` to a hidden local tunnel port, then Xray behind the public gateway port.
+The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The automatic proxy startup then uses `gh codespace ports forward` to reproduce the stable `sp-proxy` tunnel shape: remote `127.0.0.1:8899` to a hidden local tunnel port, then Xray behind the public gateway port.
 
-During startup, the backend verifies `gh codespace ssh -c <codespace> true`, refreshes OpenSSH config with `gh codespace ssh --config -c <codespace>`, ensures the `proxy2` command is listening on `127.0.0.1:8899` inside the Codespace, then opens the native SSH tunnel. The config refresh timeout is controlled by `LocalProxy__CodespaceSshConfigTimeoutSeconds`, and remote proxy startup is controlled by `LocalProxy__CodespaceRemoteProxyStartupTimeoutSeconds`; both default to 120 seconds. If the tunnel exits unexpectedly, the next proxy request triggers selection and startup again.
+During startup, the backend verifies `gh codespace ssh -c <codespace> true`, then opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`. Remote proxy verification/startup is skipped by default because the working manual `sp-proxy` flow expects the Codespace proxy to already listen on `8899`; set `LocalProxy__CodespaceEnsureRemoteProxy=true` to ask the app to run the configured `proxy` command inside the Codespace first. If the tunnel exits unexpectedly, the panel reports `Disconnected`, and the next proxy request triggers selection and startup again. If the idle window is reached, the panel reports `ZzzIdle` and the backing Codespace is stopped to save usage.
 
 ## Git Commands In This Workspace
 

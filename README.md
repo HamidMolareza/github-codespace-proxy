@@ -17,7 +17,7 @@ The application stores GitHub username/PAT records with ASP.NET Core Data Protec
 - On first proxy traffic, automatically select the configured account with the lowest Codespaces usage, ensure the `wproxy97/proxy2` fork and Codespace exist, stop extra running Codespaces, and start the tunnel-backed Xray proxy.
 - Inspect operational activity, diagnostics, and correlation IDs.
 
-The app reproduces the stable `sp-proxy` shape with native `gh` and OpenSSH: it starts/resumes the selected Codespace, verifies the remote proxy on `127.0.0.1:8899`, opens a hidden local SSH tunnel, and routes Xray through that tunnel. Limited accounts are skipped, and idle shutdown stops the backing Codespace to reduce Codespaces usage.
+The app reproduces the stable `sp-proxy` shape with native `gh`: it starts/resumes the selected Codespace, opens `gh codespace ports forward` from remote `127.0.0.1:8899` to a hidden local tunnel port, and routes Xray through that tunnel. Limited accounts are skipped, and idle shutdown stops the backing Codespace to reduce Codespaces usage.
 
 ## Run Locally
 
@@ -51,7 +51,7 @@ Host-network endpoints:
 - Backend API: `127.0.0.1:5080`
 - Codespace proxy: `127.0.0.1:8910` for both HTTP and SOCKS5
 
-Compose uses Linux host networking so `gh codespace ssh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, sets `HOME=/app/data/home`, and stores generated Codespaces SSH config under `/app/data/codespaces-ssh`. The gateway binds `127.0.0.1:8910` immediately; the first HTTP or SOCKS request starts the best available Codespace backend. The SSH config refresh is scoped to the selected Codespace and defaults to a 120 second timeout via `LocalProxy__CodespaceSshConfigTimeoutSeconds`. Startup also verifies the `proxy2` mixed proxy inside the Codespace and starts `proxy` on `127.0.0.1:8899` if it is not already listening.
+Compose uses Linux host networking so `gh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, and sets `HOME=/app/data/home`. The gateway binds `127.0.0.1:8910` immediately; the first HTTP or SOCKS request starts the best available Codespace backend. Startup uses `gh codespace ports forward 8899:<hidden-port> -c <codespace>` by default, matching the working `sp-proxy` flow. Optional remote proxy verification/startup can be enabled with `LocalProxy__CodespaceEnsureRemoteProxy=true`.
 
 Check the stack:
 

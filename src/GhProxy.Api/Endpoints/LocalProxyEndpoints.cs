@@ -39,24 +39,61 @@ public static class LocalProxyEndpoints
         group.MapGet("/status", async (AppDbContext db, LocalProxyRuntimeService runtime, IClock clock, CancellationToken ct) =>
         {
             var settings = await GetOrCreateSettingsProfileAsync(db, clock, ct);
-            var session = await runtime.GetActiveAsync(ct);
-            var selectedAccount = session?.AccountId is null
-                ? null
-                : await db.GitHubAccounts
+            var activeSession = await runtime.GetActiveAsync(ct);
+            var runtimeStatus = runtime.GetAutomationStatus();
+            var latestSession = activeSession is null
+                ? (await db.LocalProxySessions
+                    .Include(x => x.Profile)
+                    .Where(x => x.ProfileId == settings.Id)
+                    .ToListAsync(ct))
+                    .OrderByDescending(x => x.StartedAt)
+                    .FirstOrDefault()
+                : null;
+            var selectedAccount = runtimeStatus.AccountUsername;
+            if (selectedAccount is null && activeSession?.AccountId is not null)
+            {
+                selectedAccount = await db.GitHubAccounts
                     .AsNoTracking()
-                    .Where(x => x.Id == session.AccountId.Value)
+                    .Where(x => x.Id == activeSession.AccountId.Value)
                     .Select(x => x.Username)
                     .FirstOrDefaultAsync(ct);
-            var phase = session?.Status.ToString() ?? "WaitingForTraffic";
+            }
+
+            var phase = activeSession?.Status.ToString() ?? runtimeStatus.Phase;
+            var warning = runtimeStatus.Warning;
+            var lastError = runtimeStatus.LastError ?? latestSession?.LastError;
+            if (activeSession is null && latestSession is not null)
+            {
+                if (IsIdleStopped(latestSession, settings))
+                {
+                    phase = "ZzzIdle";
+                    warning ??= $"Idle timeout reached after {settings.IdleShutdownMinutes} minutes. The backing Codespace was stopped to save usage.";
+                }
+                else if (latestSession.Status == LocalProxySessionStatus.Error && phase == "WaitingForTraffic")
+                {
+                    phase = "Error";
+                }
+                else if (latestSession.Status == LocalProxySessionStatus.Starting && phase == "WaitingForTraffic")
+                {
+                    phase = "Starting";
+                }
+            }
+
+            var sessionResponse = activeSession is not null
+                ? ToResponse(activeSession)
+                : latestSession is null
+                    ? null
+                    : ToResponse(latestSession, latestSession.Profile ?? settings, runtimeStatus.AccountId, runtimeStatus.CodespaceName, 0);
+
             return Results.Ok(new LocalProxyAutomationStatusResponse(
                 ToResponse(settings),
-                ToResponse(session),
+                sessionResponse,
                 phase,
                 selectedAccount,
-                session?.CodespaceName,
-                runtime.GetLastAutomationWarning(),
-                null,
-                session?.LastError));
+                runtimeStatus.CodespaceName ?? activeSession?.CodespaceName,
+                warning,
+                runtimeStatus.NextRetryAt,
+                lastError));
         });
 
         group.MapPost("/profiles", async (LocalProxyProfileRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
@@ -235,6 +272,48 @@ public static class LocalProxyEndpoints
                 state.CodespaceName,
                 state.RemoteProxyPort,
                 state.LocalTunnelPort);
+
+    private static LocalProxySessionResponse ToResponse(
+        LocalProxySession session,
+        LocalProxyProfile profile,
+        Guid? accountId,
+        string? codespaceName,
+        int activeConnections)
+    {
+        var idleAt = session.LastActivityAt.AddMinutes(Math.Max(1, profile.IdleShutdownMinutes));
+        var httpProxyUrl = $"http://127.0.0.1:{session.LocalPort}";
+        var socksProxyUrl = $"socks5h://127.0.0.1:{session.SocksPort}";
+        return new LocalProxySessionResponse(
+            session.Id,
+            profile.Id,
+            profile.Name,
+            session.Status,
+            session.BindHost,
+            session.LocalPort,
+            session.SocksPort,
+            httpProxyUrl,
+            httpProxyUrl,
+            socksProxyUrl,
+            session.StartedAt,
+            session.LastActivityAt,
+            idleAt,
+            session.StoppedAt,
+            session.LastError,
+            session.TotalRequests,
+            session.TotalConnectTunnels,
+            session.TotalBytesReceived,
+            session.TotalBytesSent,
+            activeConnections,
+            accountId,
+            codespaceName,
+            null,
+            null);
+    }
+
+    private static bool IsIdleStopped(LocalProxySession session, LocalProxyProfile profile) =>
+        session.Status == LocalProxySessionStatus.Stopped &&
+        session.StoppedAt is not null &&
+        session.StoppedAt.Value >= session.LastActivityAt.AddMinutes(Math.Max(1, profile.IdleShutdownMinutes)).AddSeconds(-10);
 
     private static async Task<LocalProxyProfile> GetOrCreateSettingsProfileAsync(AppDbContext db, IClock? clock, CancellationToken ct)
     {

@@ -15,13 +15,13 @@ services:
       ConnectionStrings__Default: Data Source=/app/data/gh-proxy.db
       Observability__LogDirectory: /app/data/logs
       LocalProxy__BindHostOverride: 127.0.0.1
+      LocalProxy__ProbeTimeoutSeconds: 30
       LocalProxy__XrayExecutablePath: /usr/local/bin/xray
       LocalProxy__XrayConfigDirectory: /app/data/xray
-      LocalProxy__CodespaceSshConfigDirectory: /app/data/codespaces-ssh
       LocalProxy__CodespaceRemoteDashboardPort: 8898
       LocalProxy__CodespaceRemoteProxyCommand: proxy
       LocalProxy__CodespaceRemoteProxyStartupTimeoutSeconds: 120
-      LocalProxy__CodespaceSshConfigTimeoutSeconds: 120
+      LocalProxy__CodespaceTunnelReadyTimeoutSeconds: 30
       GitHub__AutoStopIdleMinutes: 30
       GitHub__SyncIntervalSeconds: 300
     volumes:
