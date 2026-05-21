@@ -44,13 +44,13 @@ Build and start both services:
 docker compose up --build -d
 ```
 
-Published ports:
+Host-network endpoints:
 
 - Frontend: `127.0.0.1:5173`
 - Backend API: `127.0.0.1:5080`
 - Codespace proxy: `127.0.0.1:8901` for both HTTP and SOCKS5
 
-The backend image includes `gh`, `ssh`, and Xray. Compose also sets `HOME=/app/data/home` and stores generated Codespaces SSH config under `/app/data/codespaces-ssh`, so Run Proxy works from the container without host-local tunnel tools.
+Compose uses Linux host networking so `gh codespace ssh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, sets `HOME=/app/data/home`, and stores generated Codespaces SSH config under `/app/data/codespaces-ssh`.
 
 Check the stack:
 
@@ -60,7 +60,7 @@ curl http://127.0.0.1:5080/api/health
 curl http://127.0.0.1:5080/api/diagnostics/runtime
 ```
 
-`/api/diagnostics/runtime` must show Xray, GitHub CLI, and ssh as found before a Codespace proxy can start.
+`/api/diagnostics/runtime` must show Xray, GitHub CLI, ssh, and GitHub direct networking as ready before a Codespace proxy can start.
 
 Stop it:
 

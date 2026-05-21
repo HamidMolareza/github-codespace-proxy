@@ -53,6 +53,14 @@ public sealed class LocalProxyRuntimeService(
             return LocalProxyStartResult.Fail(message, null);
         }
 
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.direct_network.enabled",
+            OperationalEventSeverity.Information,
+            "GitHub Codespaces startup will bypass proxy environment variables and use the direct/VPN route.",
+            NodeId: accountId,
+            Details: new { account.Username, codespaceName, NoProxy = true }),
+            cancellationToken);
+
         var codespaces = scope.ServiceProvider.GetRequiredService<GitHubCodespaceService>();
         var beforeStart = await codespaces.RefreshCodespaceAsync(accountId, codespaceName, cancellationToken);
         var stopOnStartFailure = beforeStart is null || !IsCodespaceRunning(beforeStart.State);
@@ -695,7 +703,7 @@ public sealed class LocalProxyRuntimeService(
             Kind: "codespace.ssh.tunnel",
             NodeId: launch.AccountId,
             SessionId: sessionId,
-            EnvironmentVariables: BuildGitHubCommandEnvironment(launch.Token));
+            EnvironmentVariables: DirectNetworkEnvironment.CreateGitHubCommandEnvironment(launch.Token));
 
         var process = commandRunner.Start(command);
         var timeout = TimeSpan.FromSeconds(Math.Clamp(_options.CodespaceTunnelReadyTimeoutSeconds, 5, 120));
@@ -769,7 +777,7 @@ public sealed class LocalProxyRuntimeService(
             kind,
             launch.AccountId,
             sessionId,
-            BuildGitHubCommandEnvironment(launch.Token)), cancellationToken);
+            DirectNetworkEnvironment.CreateGitHubCommandEnvironment(launch.Token)), cancellationToken);
         if (!result.Succeeded)
         {
             throw new InvalidOperationException($"{kind} failed: {FirstNonEmpty(result.StandardError, result.StandardOutput, "command failed")}");
@@ -803,19 +811,6 @@ public sealed class LocalProxyRuntimeService(
         await db.SaveChangesAsync(cancellationToken);
         return profile.Id;
     }
-
-    private static IReadOnlyDictionary<string, string?> BuildGitHubCommandEnvironment(string token) =>
-        new Dictionary<string, string?>
-        {
-            ["GITHUB_TOKEN"] = token,
-            ["GH_TOKEN"] = token,
-            ["HTTP_PROXY"] = null,
-            ["HTTPS_PROXY"] = null,
-            ["ALL_PROXY"] = null,
-            ["http_proxy"] = null,
-            ["https_proxy"] = null,
-            ["all_proxy"] = null
-        };
 
     private static string FirstNonEmpty(params string[] values) =>
         values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;

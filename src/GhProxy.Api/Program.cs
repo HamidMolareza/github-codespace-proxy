@@ -29,7 +29,8 @@ builder.Services.AddHttpClient<IGitHubApiClient, GitHubApiClient>((serviceProvid
     var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<GitHubOptions>>().Value;
     client.BaseAddress = new Uri(options.ApiBaseUrl);
     client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
-});
+})
+    .ConfigurePrimaryHttpMessageHandler(DirectNetworkEnvironment.CreateHttpClientHandler);
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<ICorrelationContext, CorrelationContext>();
 builder.Services.AddSingleton<ISensitiveDataRedactor, SensitiveDataRedactor>();

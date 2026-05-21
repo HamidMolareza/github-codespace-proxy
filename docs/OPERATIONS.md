@@ -63,11 +63,11 @@ export no_proxy=localhost,127.0.0.1
 
 ## Docker Compose
 
-The repository includes `compose.yml` for running both services:
+The repository includes `compose.yml` for running both services with Linux host networking:
 
-- `backend`: ASP.NET Core API on container port `8080`, published as `127.0.0.1:5080`.
-- `backend` mixed proxy listener: container port `8901`, published as `127.0.0.1:8901`.
-- `frontend`: Node serving the built React app on container port `8080`, published as `127.0.0.1:5173`.
+- `backend`: ASP.NET Core API bound to `127.0.0.1:5080` on the host network.
+- `backend` mixed proxy listener: bound to `127.0.0.1:8901` by default.
+- `frontend`: Node serving the built React app on `127.0.0.1:5173` on the host network.
 - `gh-proxy-data`: named volume for SQLite, JSONL logs, and Data Protection state.
 
 Start:
@@ -82,7 +82,7 @@ Open:
 http://127.0.0.1:5173
 ```
 
-In Docker mode, Compose sets `LocalProxy__BindHostOverride=0.0.0.0` so the mixed listener can accept Docker-published connections. The backend image includes `gh`, `ssh`, and Xray, and it stores generated Codespaces SSH config under `/app/data/codespaces-ssh`.
+In Docker mode, Compose uses `network_mode: host` so Codespaces traffic follows the connected host VPN. Compose sets `LocalProxy__BindHostOverride=127.0.0.1` so the mixed listener remains local-only. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, and stores generated Codespaces SSH config under `/app/data/codespaces-ssh`.
 
 Smoke test:
 
@@ -93,7 +93,7 @@ curl http://127.0.0.1:5080/api/activity/summary
 curl http://127.0.0.1:5080/api/diagnostics/runtime
 ```
 
-The runtime diagnostics endpoint must report Xray, GitHub CLI, and ssh as found before Run Proxy can start a Codespace-backed local proxy.
+The runtime diagnostics endpoint must report Xray, GitHub CLI, ssh, and GitHub direct networking as ready before Run Proxy can start a Codespace-backed local proxy.
 
 Stop:
 

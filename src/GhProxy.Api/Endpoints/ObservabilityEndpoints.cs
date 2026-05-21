@@ -103,7 +103,8 @@ public static class ObservabilityEndpoints
             var tools = new List<ToolDiagnosticResponse>
             {
                 new("GitHub API", Uri.TryCreate(githubOptions.Value.ApiBaseUrl, UriKind.Absolute, out _), githubOptions.Value.ApiBaseUrl),
-                new("Data Protection", Directory.Exists(Path.Combine(environment.ContentRootPath, "data", "keys")), "Keys are persisted under the app data directory.")
+                new("Data Protection", Directory.Exists(Path.Combine(environment.ContentRootPath, "data", "keys")), "Keys are persisted under the app data directory."),
+                new("GitHub direct networking", true, "GitHub REST and Codespaces commands bypass proxy environment variables.")
             };
             tools.AddRange(toolChecker
                 .GetRuntimeDiagnostics(localProxyOptions.Value.XrayExecutablePath)
