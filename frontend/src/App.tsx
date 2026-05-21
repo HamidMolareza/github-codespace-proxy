@@ -34,7 +34,7 @@ import type {
   GitHubLifecycleResult,
   GitHubUsage,
   LocalProxyProfile,
-  LocalProxyProfileForm,
+  LocalProxySettingsForm,
   LocalProxyResult,
   LocalProxySession,
   OperationalEvent,
@@ -58,15 +58,12 @@ const emptyCodespaceForm: CreateCodespaceForm = {
   idleTimeoutMinutes: 30
 };
 
-const emptyProfileForm: LocalProxyProfileForm = {
-  name: '',
+const emptySettingsForm: LocalProxySettingsForm = {
   bindHost: '127.0.0.1',
   localPort: 8910,
-  socksPort: 8910,
   proxyUsername: '',
   proxyPassword: '',
-  idleShutdownMinutes: 30,
-  notes: ''
+  idleShutdownMinutes: 30
 };
 
 const defaultActivityFilters: ActivityFilters = {
@@ -95,9 +92,8 @@ export default function App() {
   const [selectedEvent, setSelectedEvent] = useState<OperationalEvent | null>(null);
   const [accountForm, setAccountForm] = useState<GitHubAccountForm>(emptyAccountForm);
   const [codespaceForm, setCodespaceForm] = useState<CreateCodespaceForm>(emptyCodespaceForm);
-  const [profileForm, setProfileForm] = useState<LocalProxyProfileForm>(emptyProfileForm);
+  const [settingsForm, setSettingsForm] = useState<LocalProxySettingsForm>(emptySettingsForm);
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
-  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>({ kind: 'info', text: 'Ready' });
   const [codespaceProgress, setCodespaceProgress] = useState<Record<string, string>>({});
@@ -107,10 +103,7 @@ export default function App() {
     [accounts, selectedAccountId]
   );
 
-  const selectedProfile = useMemo(
-    () => profiles.find((profile) => profile.id === editingProfileId) ?? profiles[0] ?? null,
-    [editingProfileId, profiles]
-  );
+  const selectedProfile = profiles[0] ?? null;
   const codespaceProxyMissingTools = useMemo(() => {
     const requiredTools = new Set(['Xray', 'GitHub CLI', 'ssh']);
     return diagnostics?.tools.filter((tool) => requiredTools.has(tool.name) && !tool.available).map((tool) => tool.name) ?? [];
@@ -138,8 +131,15 @@ export default function App() {
   }, [selectedAccountId]);
 
   const loadLocalProxy = useCallback(async () => {
-    const nextProfiles = await api.localProxyProfiles();
-    setProfiles(nextProfiles);
+    const settings = await api.localProxySettings();
+    setProfiles([settings]);
+    setSettingsForm((current) => ({
+      bindHost: settings.bindHost,
+      localPort: settings.localPort,
+      proxyUsername: settings.proxyUsername ?? '',
+      proxyPassword: current.proxyPassword,
+      idleShutdownMinutes: settings.idleShutdownMinutes
+    }));
     try {
       setLocalSession((await api.localProxySession()) ?? null);
     } catch {
@@ -282,17 +282,14 @@ export default function App() {
     setCodespaceProgress((current) => ({ ...current, [key]: `${label}: still pending` }));
   }
 
-  async function saveProfile(event: FormEvent) {
+  async function saveSettings(event: FormEvent) {
     event.preventDefault();
-    await runAction(editingProfileId ? 'update-profile' : 'create-profile', async () => {
-      if (editingProfileId) {
-        return api.updateLocalProxyProfile(editingProfileId, profileForm);
-      }
-
-      return api.createLocalProxyProfile(profileForm);
+    await runAction('update-proxy-settings', async () => {
+      const updated = await api.updateLocalProxySettings(settingsForm);
+      setProfiles([updated]);
+      setSettingsForm((current) => ({ ...current, proxyPassword: '' }));
+      return updated;
     });
-    setProfileForm(emptyProfileForm);
-    setEditingProfileId(null);
   }
 
   function editAccount(account: GitHubAccount) {
@@ -305,20 +302,6 @@ export default function App() {
     });
   }
 
-  function editProfile(profile: LocalProxyProfile) {
-    setEditingProfileId(profile.id);
-    setProfileForm({
-      name: profile.name,
-      bindHost: profile.bindHost,
-      localPort: profile.localPort,
-      socksPort: profile.socksPort,
-      proxyUsername: profile.proxyUsername ?? '',
-      proxyPassword: '',
-      idleShutdownMinutes: profile.idleShutdownMinutes,
-      notes: profile.notes ?? ''
-    });
-  }
-
   function updateAccountField<K extends keyof GitHubAccountForm>(field: K, value: GitHubAccountForm[K]) {
     setAccountForm((current) => ({ ...current, [field]: value }));
   }
@@ -327,14 +310,8 @@ export default function App() {
     setCodespaceForm((current) => ({ ...current, [field]: value }));
   }
 
-  function updateProfileField<K extends keyof LocalProxyProfileForm>(field: K, value: LocalProxyProfileForm[K]) {
-    setProfileForm((current) => {
-      const next = { ...current, [field]: value };
-      if (field === 'localPort') {
-        next.socksPort = value as number;
-      }
-      return next;
-    });
+  function updateSettingsField<K extends keyof LocalProxySettingsForm>(field: K, value: LocalProxySettingsForm[K]) {
+    setSettingsForm((current) => ({ ...current, [field]: value }));
   }
 
   function updateActivityFilter<K extends keyof ActivityFilters>(field: K, value: ActivityFilters[K]) {
@@ -447,18 +424,14 @@ export default function App() {
       {activeTab === 'local-proxy' && (
         <LocalProxyPanel
           busy={busy}
-          editingProfileId={editingProfileId}
-          form={profileForm}
+          form={settingsForm}
           profiles={profiles}
           selectedProfile={selectedProfile}
           session={localSession}
-          onCancelEdit={() => { setEditingProfileId(null); setProfileForm(emptyProfileForm); }}
-          onDeleteProfile={(id) => runAction('delete-profile', () => api.deleteLocalProxyProfile(id))}
-          onEditProfile={editProfile}
           onProbe={() => runAction('probe-local-proxy', () => api.probeLocalProxy())}
-          onSaveProfile={saveProfile}
+          onSaveSettings={saveSettings}
           onStop={() => runAction('stop-local-proxy', () => api.stopLocalProxy())}
-          onUpdateField={updateProfileField}
+          onUpdateField={updateSettingsField}
         />
       )}
 
@@ -770,35 +743,28 @@ function CodespaceTable({ busy, codespaceProgress, codespaces, codespaceProxyRea
 
 interface LocalProxyPanelProps {
   busy: string | null;
-  editingProfileId: string | null;
-  form: LocalProxyProfileForm;
+  form: LocalProxySettingsForm;
   profiles: LocalProxyProfile[];
   selectedProfile: LocalProxyProfile | null;
   session: LocalProxySession | null;
-  onCancelEdit: () => void;
-  onDeleteProfile: (id: string) => void;
-  onEditProfile: (profile: LocalProxyProfile) => void;
   onProbe: () => void;
-  onSaveProfile: (event: FormEvent) => Promise<void>;
+  onSaveSettings: (event: FormEvent) => Promise<void>;
   onStop: () => void;
-  onUpdateField: <K extends keyof LocalProxyProfileForm>(field: K, value: LocalProxyProfileForm[K]) => void;
+  onUpdateField: <K extends keyof LocalProxySettingsForm>(field: K, value: LocalProxySettingsForm[K]) => void;
 }
 
 function LocalProxyPanel({
   busy,
-  editingProfileId,
   form,
   profiles,
   selectedProfile,
   session,
-  onCancelEdit,
-  onDeleteProfile,
-  onEditProfile,
   onProbe,
-  onSaveProfile,
+  onSaveSettings,
   onStop,
   onUpdateField
 }: LocalProxyPanelProps) {
+  const settings = selectedProfile;
   const proxyExports = session
     ? [
         `export HTTP_PROXY=${session.httpProxyUrl}`,
@@ -830,16 +796,12 @@ function LocalProxyPanel({
 
       <section className="content-grid">
         <div className="panel-stack">
-          <form className="editor" onSubmit={onSaveProfile}>
+          <form className="editor" onSubmit={onSaveSettings}>
             <div className="section-title">
               <Wifi size={20} />
-              <h2>{editingProfileId ? 'Edit Profile' : 'Create Profile'}</h2>
+              <h2>Codespace Proxy Settings</h2>
             </div>
             <div className="form-grid">
-              <label>
-                Name
-                <input value={form.name} onChange={(event) => onUpdateField('name', event.target.value)} required />
-              </label>
               <label>
                 Bind host
                 <input value={form.bindHost} onChange={(event) => onUpdateField('bindHost', event.target.value)} required />
@@ -858,16 +820,11 @@ function LocalProxyPanel({
               </label>
               <label>
                 Password
-                <input type="password" value={form.proxyPassword} onChange={(event) => onUpdateField('proxyPassword', event.target.value)} placeholder={editingProfileId ? 'Leave empty to keep current' : ''} />
-              </label>
-              <label className="wide">
-                Notes
-                <input value={form.notes} onChange={(event) => onUpdateField('notes', event.target.value)} />
+                <input type="password" value={form.proxyPassword} onChange={(event) => onUpdateField('proxyPassword', event.target.value)} placeholder={settings?.requiresAuthentication ? 'Leave empty to keep current' : ''} />
               </label>
             </div>
             <div className="form-actions">
-              <button type="submit" disabled={busy !== null}>{editingProfileId ? 'Update' : 'Create'}</button>
-              {editingProfileId && <button type="button" onClick={onCancelEdit} disabled={busy !== null}>Cancel</button>}
+              <button type="submit" disabled={busy !== null}>Save settings</button>
             </div>
           </form>
 
@@ -900,33 +857,25 @@ function LocalProxyPanel({
         <section className="node-list">
           <div className="section-title">
             <Wifi size={20} />
-            <h2>Codespace Proxy Profiles</h2>
+            <h2>Automation Status</h2>
           </div>
-          {profiles.length === 0 && <div className="empty-state">No Codespace proxy profiles yet. Running a Codespace can create the default profile.</div>}
-          {profiles.map((profile) => (
-            <article className={`node-card ${profile.id === selectedProfile?.id ? 'selected-row' : ''}`} key={profile.id}>
+          {profiles.length === 0 && <div className="empty-state">Loading Codespace proxy settings.</div>}
+          {settings && (
+            <article className="node-card selected-row">
               <div className="node-main">
                 <div>
-                  <h3>{profile.name}</h3>
-                  <p>HTTP and SOCKS {profile.bindHost}:{profile.localPort}</p>
+                  <h3>Single Codespace Proxy</h3>
+                  <p>HTTP and SOCKS {settings.bindHost}:{settings.localPort}</p>
                 </div>
-                <span className={`badge ${badgeClass(profile.status)}`}>{profile.status}</span>
+                <span className={`badge ${badgeClass(session?.status ?? settings.status)}`}>{session?.status ?? settings.status}</span>
               </div>
               <div className="node-meta">
-                <span>{profile.idleShutdownMinutes}m idle</span>
-                <span>{profile.requiresAuthentication ? `auth ${profile.proxyUsername}` : 'no auth'}</span>
-                {profile.notes && <span>{profile.notes}</span>}
-              </div>
-              <div className="node-actions">
-                <button title="Edit" onClick={() => onEditProfile(profile)} disabled={busy !== null}>
-                  <Pencil size={16} />
-                </button>
-                <button title="Delete" className="danger" onClick={() => { if (confirmAction(`Delete profile "${profile.name}"?`)) onDeleteProfile(profile.id); }} disabled={busy !== null || session?.profileId === profile.id}>
-                  <Trash2 size={16} />
-                </button>
+                <span>{settings.idleShutdownMinutes}m idle</span>
+                <span>{settings.requiresAuthentication ? `auth ${settings.proxyUsername}` : 'no auth'}</span>
+                {session?.codespaceName && <span>{session.codespaceName}</span>}
               </div>
             </article>
-          ))}
+          )}
         </section>
       </section>
     </>

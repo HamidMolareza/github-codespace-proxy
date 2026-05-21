@@ -52,6 +52,14 @@ export interface LocalProxyProfileForm {
   notes: string;
 }
 
+export interface LocalProxySettingsForm {
+  bindHost: string;
+  localPort: number;
+  proxyUsername: string;
+  proxyPassword: string;
+  idleShutdownMinutes: number;
+}
+
 export interface LocalProxySession {
   id: string;
   profileId: string;
@@ -73,6 +81,21 @@ export interface LocalProxySession {
   totalBytesReceived: number;
   totalBytesSent: number;
   activeConnections: number;
+  accountId?: string | null;
+  codespaceName?: string | null;
+  remoteProxyPort?: number | null;
+  localTunnelPort?: number | null;
+}
+
+export interface LocalProxyAutomationStatus {
+  settings: LocalProxyProfile;
+  session?: LocalProxySession | null;
+  phase: string;
+  selectedAccount?: string | null;
+  selectedCodespace?: string | null;
+  warning?: string | null;
+  nextRetryAt?: string | null;
+  lastError?: string | null;
 }
 
 export interface LocalProxyResult {

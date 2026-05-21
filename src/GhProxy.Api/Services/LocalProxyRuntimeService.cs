@@ -989,10 +989,24 @@ public sealed class LocalProxyRuntimeService(
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var session = await db.LocalProxySessions.Include(x => x.Profile).FirstAsync(x => x.Id == running.SessionId, cancellationToken);
-        return ToRuntimeState(session, session.Profile!, running.MixedListener.ActiveConnections);
+        return ToRuntimeState(
+            session,
+            session.Profile!,
+            running.MixedListener.ActiveConnections,
+            running.AccountId,
+            running.CodespaceName,
+            running.RemoteProxyPort,
+            running.LocalTunnelPort);
     }
 
-    private static LocalProxyRuntimeState ToRuntimeState(LocalProxySession session, LocalProxyProfile profile, int activeConnections)
+    private static LocalProxyRuntimeState ToRuntimeState(
+        LocalProxySession session,
+        LocalProxyProfile profile,
+        int activeConnections,
+        Guid? accountId = null,
+        string? codespaceName = null,
+        int? remoteProxyPort = null,
+        int? localTunnelPort = null)
     {
         var idleAt = session.LastActivityAt.AddMinutes(Math.Max(1, profile.IdleShutdownMinutes));
         var httpProxyUrl = $"http://127.0.0.1:{session.LocalPort}";
@@ -1017,7 +1031,11 @@ public sealed class LocalProxyRuntimeService(
             session.TotalConnectTunnels,
             session.TotalBytesReceived,
             session.TotalBytesSent,
-            activeConnections);
+            activeConnections,
+            accountId,
+            codespaceName,
+            remoteProxyPort,
+            localTunnelPort);
     }
 
     private string GetRuntimeDirectory(Guid sessionId)
@@ -1184,7 +1202,11 @@ public sealed record LocalProxyRuntimeState(
     long TotalConnectTunnels,
     long TotalBytesReceived,
     long TotalBytesSent,
-    int ActiveConnections);
+    int ActiveConnections,
+    Guid? AccountId,
+    string? CodespaceName,
+    int? RemoteProxyPort,
+    int? LocalTunnelPort);
 
 public sealed record LocalProxyRuntimeResult(bool Succeeded, string Message, LocalProxyRuntimeState? Session);
 

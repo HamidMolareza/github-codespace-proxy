@@ -13,13 +13,52 @@ public static class LocalProxyEndpoints
         var group = app.MapGroup("/api/local-proxy");
 
         group.MapGet("/profiles", async (AppDbContext db, CancellationToken ct) =>
-            await db.LocalProxyProfiles
-                .OrderBy(x => x.Name)
-                .Select(x => ToResponse(x))
-                .ToListAsync(ct));
+        {
+            var profile = await GetOrCreateSettingsProfileAsync(db, null, ct);
+            return new[] { ToResponse(profile) };
+        });
+
+        group.MapGet("/settings", async (AppDbContext db, IClock clock, CancellationToken ct) =>
+            Results.Ok(ToResponse(await GetOrCreateSettingsProfileAsync(db, clock, ct))));
+
+        group.MapPut("/settings", async (LocalProxySettingsRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
+        {
+            var profile = await GetOrCreateSettingsProfileAsync(db, clock, ct);
+            var validation = ValidateSettings(request, requirePasswordForNewAuth: !string.IsNullOrWhiteSpace(request.ProxyUsername) && string.IsNullOrWhiteSpace(profile.ProtectedProxyPassword));
+            if (validation is not null)
+            {
+                return Results.BadRequest(validation);
+            }
+
+            ApplySettings(profile, request, secrets, clock);
+            await db.SaveChangesAsync(ct);
+            await audit.WriteAsync("local_proxy.settings.update", "Updated Codespace proxy settings.", null, ct);
+            return Results.Ok(ToResponse(profile));
+        });
+
+        group.MapGet("/status", async (AppDbContext db, LocalProxyRuntimeService runtime, IClock clock, CancellationToken ct) =>
+        {
+            var settings = await GetOrCreateSettingsProfileAsync(db, clock, ct);
+            var session = await runtime.GetActiveAsync(ct);
+            var phase = session?.Status.ToString() ?? settings.Status.ToString();
+            return Results.Ok(new LocalProxyAutomationStatusResponse(
+                ToResponse(settings),
+                ToResponse(session),
+                phase,
+                session?.AccountId is null ? null : session.AccountId.Value.ToString(),
+                session?.CodespaceName,
+                null,
+                null,
+                session?.LastError));
+        });
 
         group.MapPost("/profiles", async (LocalProxyProfileRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
         {
+            if (await db.LocalProxyProfiles.AnyAsync(ct))
+            {
+                return Results.Conflict(new { error = "Only one Codespace proxy settings profile is supported. Update /api/local-proxy/settings instead." });
+            }
+
             var socksPort = request.SocksPort ?? request.LocalPort;
             var validation = await ValidateAsync(request, socksPort, db, null, requirePasswordForNewAuth: true, ct);
             if (validation is not null)
@@ -184,7 +223,86 @@ public static class LocalProxyEndpoints
                 state.TotalConnectTunnels,
                 state.TotalBytesReceived,
                 state.TotalBytesSent,
-                state.ActiveConnections);
+                state.ActiveConnections,
+                state.AccountId,
+                state.CodespaceName,
+                state.RemoteProxyPort,
+                state.LocalTunnelPort);
+
+    private static async Task<LocalProxyProfile> GetOrCreateSettingsProfileAsync(AppDbContext db, IClock? clock, CancellationToken ct)
+    {
+        var profiles = await db.LocalProxyProfiles
+            .ToListAsync(ct);
+        var profile = profiles
+            .OrderBy(x => x.CreatedAt)
+            .FirstOrDefault();
+        if (profile is not null)
+        {
+            return profile;
+        }
+
+        var now = clock?.UtcNow ?? DateTimeOffset.UtcNow;
+        profile = new LocalProxyProfile
+        {
+            Name = "Default",
+            BindHost = "127.0.0.1",
+            LocalPort = 8910,
+            SocksPort = 8910,
+            IdleShutdownMinutes = 30,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        db.LocalProxyProfiles.Add(profile);
+        await db.SaveChangesAsync(ct);
+        return profile;
+    }
+
+    private static object? ValidateSettings(LocalProxySettingsRequest request, bool requirePasswordForNewAuth)
+    {
+        var errors = new Dictionary<string, string[]>();
+        AddRequired(errors, nameof(request.BindHost), request.BindHost);
+        AddPort(errors, nameof(request.LocalPort), request.LocalPort);
+
+        if (request.IdleShutdownMinutes is < 1 or > 1440)
+        {
+            errors[nameof(request.IdleShutdownMinutes)] = ["Idle shutdown must be between 1 and 1440 minutes."];
+        }
+
+        var hasUsername = !string.IsNullOrWhiteSpace(request.ProxyUsername);
+        var hasPassword = !string.IsNullOrWhiteSpace(request.ProxyPassword);
+        if (hasPassword && !hasUsername)
+        {
+            errors[nameof(request.ProxyUsername)] = ["Username is required when password is set."];
+        }
+
+        if (requirePasswordForNewAuth && hasUsername && !hasPassword)
+        {
+            errors[nameof(request.ProxyPassword)] = ["Password is required when enabling proxy authentication."];
+        }
+
+        return errors.Count == 0 ? null : new { errors };
+    }
+
+    private static void ApplySettings(LocalProxyProfile profile, LocalProxySettingsRequest request, ISecretProtector secrets, IClock clock)
+    {
+        profile.Name = "Default";
+        profile.BindHost = request.BindHost.Trim();
+        profile.LocalPort = request.LocalPort;
+        profile.SocksPort = request.LocalPort;
+        profile.ProxyUsername = NullIfEmpty(request.ProxyUsername);
+        if (string.IsNullOrWhiteSpace(request.ProxyUsername))
+        {
+            profile.ProtectedProxyPassword = null;
+        }
+        else if (!string.IsNullOrWhiteSpace(request.ProxyPassword))
+        {
+            profile.ProtectedProxyPassword = secrets.Protect(request.ProxyPassword.Trim());
+        }
+
+        profile.IdleShutdownMinutes = request.IdleShutdownMinutes;
+        profile.Notes = null;
+        profile.UpdatedAt = clock.UtcNow;
+    }
 
     private static async Task<object?> ValidateAsync(LocalProxyProfileRequest request, int socksPort, AppDbContext db, Guid? existingProfileId, bool requirePasswordForNewAuth, CancellationToken ct)
     {

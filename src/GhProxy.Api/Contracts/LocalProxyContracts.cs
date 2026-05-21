@@ -12,6 +12,23 @@ public sealed record LocalProxyProfileRequest(
     int IdleShutdownMinutes,
     string? Notes);
 
+public sealed record LocalProxySettingsRequest(
+    string BindHost,
+    int LocalPort,
+    string? ProxyUsername,
+    string? ProxyPassword,
+    int IdleShutdownMinutes);
+
+public sealed record LocalProxyAutomationStatusResponse(
+    LocalProxyProfileResponse Settings,
+    LocalProxySessionResponse? Session,
+    string Phase,
+    string? SelectedAccount,
+    string? SelectedCodespace,
+    string? Warning,
+    DateTimeOffset? NextRetryAt,
+    string? LastError);
+
 public sealed record LocalProxyProfileResponse(
     Guid Id,
     string Name,
@@ -46,7 +63,11 @@ public sealed record LocalProxySessionResponse(
     long TotalConnectTunnels,
     long TotalBytesReceived,
     long TotalBytesSent,
-    int ActiveConnections);
+    int ActiveConnections,
+    Guid? AccountId,
+    string? CodespaceName,
+    int? RemoteProxyPort,
+    int? LocalTunnelPort);
 
 public sealed record LocalProxyRuntimeResultResponse(
     bool Succeeded,

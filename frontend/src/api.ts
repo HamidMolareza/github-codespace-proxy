@@ -10,7 +10,9 @@ import type {
   GitHubUsage,
   LocalProxyProfile,
   LocalProxyProfileForm,
+  LocalProxyAutomationStatus,
   LocalProxyResult,
+  LocalProxySettingsForm,
   LocalProxySession,
   OperationalEvent,
   RuntimeDiagnostics
@@ -44,6 +46,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   localProxyProfiles: () => request<LocalProxyProfile[]>('/api/local-proxy/profiles'),
+  localProxySettings: () => request<LocalProxyProfile>('/api/local-proxy/settings'),
+  updateLocalProxySettings: (form: LocalProxySettingsForm) =>
+    request<LocalProxyProfile>('/api/local-proxy/settings', {
+      method: 'PUT',
+      body: JSON.stringify(emptyToNull(form))
+    }),
+  localProxyStatus: () => request<LocalProxyAutomationStatus>('/api/local-proxy/status'),
   createLocalProxyProfile: (form: LocalProxyProfileForm) =>
     request<LocalProxyProfile>('/api/local-proxy/profiles', {
       method: 'POST',
