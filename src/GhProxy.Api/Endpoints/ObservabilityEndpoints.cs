@@ -97,19 +97,17 @@ public static class ObservabilityEndpoints
                 lastError is null ? null : ToResponse(lastError)));
         });
 
-        group.MapGet("/diagnostics/runtime", async (AppDbContext db, IOptions<GitHubOptions> githubOptions, IOptions<LocalProxyOptions> localProxyOptions, IHostEnvironment environment, CancellationToken ct) =>
+        group.MapGet("/diagnostics/runtime", async (AppDbContext db, IOptions<GitHubOptions> githubOptions, IOptions<LocalProxyOptions> localProxyOptions, IHostEnvironment environment, IRuntimeToolChecker toolChecker, CancellationToken ct) =>
         {
             var databaseAvailable = await db.Database.CanConnectAsync(ct);
             var tools = new List<ToolDiagnosticResponse>
             {
                 new("GitHub API", Uri.TryCreate(githubOptions.Value.ApiBaseUrl, UriKind.Absolute, out _), githubOptions.Value.ApiBaseUrl),
-                new("Data Protection", Directory.Exists(Path.Combine(environment.ContentRootPath, "data", "keys")), "Keys are persisted under the app data directory."),
-                new("Xray", ResolveExecutable(localProxyOptions.Value.XrayExecutablePath) is not null, localProxyOptions.Value.XrayExecutablePath),
-                new("GitHub CLI", ResolveExecutable("gh") is not null, "gh"),
-                new("autossh", ResolveExecutable("autossh") is not null, "autossh"),
-                new("ssh", ResolveExecutable("ssh") is not null, "ssh"),
-                new("nc", ResolveExecutable("nc") is not null, "nc")
+                new("Data Protection", Directory.Exists(Path.Combine(environment.ContentRootPath, "data", "keys")), "Keys are persisted under the app data directory.")
             };
+            tools.AddRange(toolChecker
+                .GetRuntimeDiagnostics(localProxyOptions.Value.XrayExecutablePath)
+                .Select(x => new ToolDiagnosticResponse(x.Name, x.Available, x.Message)));
 
             return Results.Ok(new RuntimeDiagnosticsResponse(databaseAvailable, tools));
         });
@@ -138,28 +136,4 @@ public static class ObservabilityEndpoints
             evt.DetailsJson);
     }
 
-    private static string? ResolveExecutable(string executablePath)
-    {
-        if (Path.IsPathRooted(executablePath) && File.Exists(executablePath))
-        {
-            return executablePath;
-        }
-
-        var path = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var candidate = Path.Combine(directory, executablePath);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
-    }
 }

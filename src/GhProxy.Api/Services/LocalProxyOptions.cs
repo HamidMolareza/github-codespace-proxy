@@ -6,6 +6,7 @@ public sealed class LocalProxyOptions
     public string? BindHostOverride { get; set; }
     public string XrayExecutablePath { get; set; } = "xray";
     public string? XrayConfigDirectory { get; set; }
+    public string? CodespaceSshConfigDirectory { get; set; }
     public int CodespaceRemoteProxyPort { get; set; } = 8899;
     public int CodespaceTunnelReadyTimeoutSeconds { get; set; } = 30;
     public int CodespaceStartTimeoutSeconds { get; set; } = 180;

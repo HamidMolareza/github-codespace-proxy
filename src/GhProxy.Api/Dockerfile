@@ -18,9 +18,22 @@ FROM mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm AS runtime
 WORKDIR /app
 
 ARG XRAY_VERSION=latest
+ARG GH_VERSION=2.75.0
 
 ENV ASPNETCORE_URLS=http://+:8080 \
-    DOTNET_EnableDiagnostics=0
+    DOTNET_EnableDiagnostics=0 \
+    HOME=/app/data/home
+
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+        amd64) gh_arch="amd64" ;; \
+        arm64) gh_arch="arm64" ;; \
+        *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.tar.gz" -o /tmp/gh.tar.gz \
+    && tar -xzf /tmp/gh.tar.gz -C /tmp \
+    && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" /usr/local/bin/gh \
+    && rm -rf "/tmp/gh_${GH_VERSION}_linux_${gh_arch}" /tmp/gh.tar.gz
 
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
@@ -39,6 +52,8 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -rf /tmp/xray /tmp/xray.zip
 
 COPY --from=build /app/publish .
+
+RUN mkdir -p /app/data/home/.ssh /app/data/codespaces-ssh /app/data/xray /app/data/logs
 
 VOLUME ["/app/data"]
 EXPOSE 8080 8901

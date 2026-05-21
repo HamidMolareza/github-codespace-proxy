@@ -16,7 +16,7 @@ The application stores GitHub username/PAT records with ASP.NET Core Data Protec
 - Run a Codespace-backed Xray proxy on one local mixed port, with HTTP and SOCKS5 both available on `127.0.0.1:8901`.
 - Inspect operational activity, diagnostics, and correlation IDs.
 
-The app reproduces the stable `sp-proxy` shape with native `gh` and `autossh`: it starts/resumes the selected Codespace, verifies the remote proxy on `127.0.0.1:8899`, opens a hidden local SSH tunnel, and routes Xray through that tunnel. It does not rotate GitHub accounts to bypass quota.
+The app reproduces the stable `sp-proxy` shape with native `gh` and OpenSSH: it starts/resumes the selected Codespace, verifies the remote proxy on `127.0.0.1:8899`, opens a hidden local SSH tunnel, and routes Xray through that tunnel. It does not rotate GitHub accounts to bypass quota.
 
 ## Run Locally
 
@@ -50,7 +50,7 @@ Published ports:
 - Backend API: `127.0.0.1:5080`
 - Codespace proxy: `127.0.0.1:8901` for both HTTP and SOCKS5
 
-Codespace tunnel orchestration is intended for host-local runs where `gh`, `autossh`, `ssh`, `nc`, and the user's SSH home directory are available. Docker Compose is useful for the control plane, but host-local execution is the supported mode for Codespace tunneling.
+The backend image includes `gh`, `ssh`, and Xray. Compose also sets `HOME=/app/data/home` and stores generated Codespaces SSH config under `/app/data/codespaces-ssh`, so Run Proxy works from the container without host-local tunnel tools.
 
 Check the stack:
 
@@ -59,6 +59,8 @@ docker compose ps
 curl http://127.0.0.1:5080/api/health
 curl http://127.0.0.1:5080/api/diagnostics/runtime
 ```
+
+`/api/diagnostics/runtime` must show Xray, GitHub CLI, and ssh as found before a Codespace proxy can start.
 
 Stop it:
 

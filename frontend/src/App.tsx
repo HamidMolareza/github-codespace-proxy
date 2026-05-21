@@ -111,6 +111,10 @@ export default function App() {
     () => profiles.find((profile) => profile.id === editingProfileId) ?? profiles[0] ?? null,
     [editingProfileId, profiles]
   );
+  const codespaceProxyMissingTools = useMemo(() => {
+    const requiredTools = new Set(['Xray', 'GitHub CLI', 'ssh']);
+    return diagnostics?.tools.filter((tool) => requiredTools.has(tool.name) && !tool.available).map((tool) => tool.name) ?? [];
+  }, [diagnostics]);
 
   const loadAccounts = useCallback(async () => {
     const nextAccounts = await api.accounts();
@@ -390,6 +394,7 @@ export default function App() {
           codespaceForm={codespaceForm}
           codespaceProgress={codespaceProgress}
           codespaces={codespaces}
+          codespaceProxyMissingTools={codespaceProxyMissingTools}
           editingAccountId={editingAccountId}
           selectedAccount={selectedAccount}
           selectedAccountId={selectedAccountId}
@@ -456,6 +461,7 @@ interface CodespacesPanelProps {
   codespaceForm: CreateCodespaceForm;
   codespaceProgress: Record<string, string>;
   codespaces: CodespaceSnapshot[];
+  codespaceProxyMissingTools: string[];
   editingAccountId: string | null;
   selectedAccount: GitHubAccount | null;
   selectedAccountId: string | null;
@@ -484,6 +490,7 @@ function CodespacesPanel({
   codespaceForm,
   codespaceProgress,
   codespaces,
+  codespaceProxyMissingTools,
   editingAccountId,
   selectedAccount,
   selectedAccountId,
@@ -639,10 +646,17 @@ function CodespacesPanel({
           )}
         </div>
         {usage && <section className={`notice ${usage.state === 'Unavailable' || usage.state === 'Limited' ? 'error' : ''}`}>{usage.message}</section>}
+        {codespaceProxyMissingTools.length > 0 && (
+          <section className="notice error">
+            <Wrench size={18} />
+            <span>Codespace proxy runtime is missing: {codespaceProxyMissingTools.join(', ')}</span>
+          </section>
+        )}
         <CodespaceTable
           busy={busy}
           codespaceProgress={codespaceProgress}
           codespaces={codespaces}
+          codespaceProxyReady={codespaceProxyMissingTools.length === 0}
           selectedAccountId={selectedAccountId}
           onDelete={onDeleteCodespace}
           onExport={onExportCodespace}
@@ -659,6 +673,7 @@ interface CodespaceTableProps {
   busy: string | null;
   codespaceProgress: Record<string, string>;
   codespaces: CodespaceSnapshot[];
+  codespaceProxyReady: boolean;
   selectedAccountId: string | null;
   onDelete: (accountId: string, name: string) => void;
   onExport: (accountId: string, name: string) => void;
@@ -667,7 +682,7 @@ interface CodespaceTableProps {
   onStop: (accountId: string, name: string) => void;
 }
 
-function CodespaceTable({ busy, codespaceProgress, codespaces, selectedAccountId, onDelete, onExport, onRefresh, onStart, onStop }: CodespaceTableProps) {
+function CodespaceTable({ busy, codespaceProgress, codespaces, codespaceProxyReady, selectedAccountId, onDelete, onExport, onRefresh, onStart, onStop }: CodespaceTableProps) {
   if (!selectedAccountId) {
     return <div className="empty-state">Select or create a GitHub account.</div>;
   }
@@ -699,7 +714,7 @@ function CodespaceTable({ busy, codespaceProgress, codespaces, selectedAccountId
             <span>{codespace.machineDisplayName ?? codespace.location ?? ''}</span>
             <span>{codespace.lastUsedAt ? formatDate(codespace.lastUsedAt) : ''}</span>
             <span className="row-actions">
-              <button title="Run Codespace proxy" onClick={() => onStart(selectedAccountId, codespace.name)} disabled={busy !== null}>
+              <button title={codespaceProxyReady ? 'Run Codespace proxy' : 'Runtime tools are missing'} onClick={() => onStart(selectedAccountId, codespace.name)} disabled={busy !== null || !codespaceProxyReady}>
                 <Play size={16} />
               </button>
               <button title="Stop" onClick={() => onStop(selectedAccountId, codespace.name)} disabled={busy !== null}>

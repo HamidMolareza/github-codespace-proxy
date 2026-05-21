@@ -8,14 +8,14 @@
 - GitHub integration: direct `HttpClient` calls to official GitHub REST API endpoints.
 - Active control plane location: trusted local workstation or local Docker Compose stack.
 - Active product mode: multi-account GitHub Codespaces manager with a Codespace-backed Xray proxy.
-- Proxy mode: backend-managed Xray process routed through a host-local `autossh` tunnel to the selected Codespace.
+- Proxy mode: backend-managed Xray process routed through an OpenSSH tunnel to the selected Codespace.
 
 ## Local Proxy Boundaries
 
 - The default HTTP proxy endpoint is `http://127.0.0.1:8901`.
 - The default SOCKS proxy endpoint is `socks5h://127.0.0.1:8901`.
 - Xray exits through the selected Codespace remote proxy on `127.0.0.1:8899`.
-- Docker Compose exposes the control plane, but host-local execution is the supported Codespace tunnel mode.
+- Docker Compose exposes the control plane and supports Codespace tunnel execution inside the backend container.
 - Optional proxy authentication is passed to Xray HTTP and SOCKS inbounds from protected password storage.
 - The app does not run a VPS tunnel.
 

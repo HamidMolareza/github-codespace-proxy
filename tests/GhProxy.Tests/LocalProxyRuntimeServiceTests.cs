@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using GhProxy.Api.Contracts;
 using GhProxy.Api.Data;
 using GhProxy.Api.Domain;
 using GhProxy.Api.Services;
@@ -86,7 +87,33 @@ public sealed class LocalProxyRuntimeServiceTests
         }
     }
 
-    private static ServiceProvider CreateProvider(string databasePath)
+    [Fact]
+    public async Task StartCodespaceProxyAsync_FailsBeforeGitHubStartWhenRuntimeToolsAreMissing()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var github = new FakeGitHubApiClient();
+        await using var provider = CreateProvider(databasePath, github, new MissingRuntimeToolChecker("gh"));
+        try
+        {
+            var account = await CreateAccountAsync(provider);
+            var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
+
+            var result = await runtime.StartCodespaceProxyAsync(account.Id, "fresh", null, CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("gh", result.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(0, github.StartCalls);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    private static ServiceProvider CreateProvider(
+        string databasePath,
+        FakeGitHubApiClient? github = null,
+        IRuntimeToolChecker? toolChecker = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
@@ -94,6 +121,10 @@ public sealed class LocalProxyRuntimeServiceTests
         services.AddSingleton<IClock, TestClock>();
         services.AddSingleton<IOperationalEventSink, NoopOperationalEventSink>();
         services.AddSingleton<ICommandRunner, FakeCommandRunner>();
+        services.AddSingleton<IGitHubApiClient>(github ?? new FakeGitHubApiClient());
+        services.AddScoped<AuditService>();
+        services.AddScoped<GitHubCodespaceService>();
+        services.AddSingleton(toolChecker ?? new AvailableRuntimeToolChecker());
         services.AddSingleton<XrayConfigRenderer>();
         services.AddSingleton<IXrayProcessRunner, ThrowingXrayProcessRunner>();
         services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(Path.GetTempPath()));
@@ -126,6 +157,24 @@ public sealed class LocalProxyRuntimeServiceTests
         db.LocalProxyProfiles.Add(profile);
         await db.SaveChangesAsync();
         return profile;
+    }
+
+    private static async Task<GitHubAccount> CreateAccountAsync(ServiceProvider provider)
+    {
+        using var scope = provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        var account = new GitHubAccount
+        {
+            DisplayName = "Primary",
+            Username = "octocat",
+            ProtectedPersonalAccessToken = "token",
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        db.GitHubAccounts.Add(account);
+        await db.SaveChangesAsync();
+        return account;
     }
 
     private static int GetFreePort()
@@ -166,6 +215,64 @@ public sealed class LocalProxyRuntimeServiceTests
     {
         public XrayProcessHandle Start(string executablePath, string configPath, string workingDirectory) =>
             throw new InvalidOperationException("The test should fail during port preflight.");
+    }
+
+    private sealed class AvailableRuntimeToolChecker : IRuntimeToolChecker
+    {
+        public RuntimeToolCheckResult CheckCodespaceProxyTools(string xrayExecutablePath) =>
+            new(GetRuntimeDiagnostics(xrayExecutablePath));
+
+        public IReadOnlyList<RuntimeToolDiagnostic> GetRuntimeDiagnostics(string xrayExecutablePath) =>
+        [
+            new("Xray", xrayExecutablePath, true, xrayExecutablePath),
+            new("GitHub CLI", "gh", true, "gh"),
+            new("ssh", "ssh", true, "ssh")
+        ];
+    }
+
+    private sealed class MissingRuntimeToolChecker(string missingCommand) : IRuntimeToolChecker
+    {
+        public RuntimeToolCheckResult CheckCodespaceProxyTools(string xrayExecutablePath) =>
+            new(GetRuntimeDiagnostics(xrayExecutablePath));
+
+        public IReadOnlyList<RuntimeToolDiagnostic> GetRuntimeDiagnostics(string xrayExecutablePath) =>
+        [
+            new("Xray", xrayExecutablePath, true, xrayExecutablePath),
+            new("GitHub CLI", "gh", missingCommand != "gh", missingCommand == "gh" ? "Missing executable: gh" : "gh"),
+            new("ssh", "ssh", missingCommand != "ssh", missingCommand == "ssh" ? "Missing executable: ssh" : "ssh")
+        ];
+    }
+
+    private sealed class FakeGitHubApiClient : IGitHubApiClient
+    {
+        public int StartCalls { get; private set; }
+
+        public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
+            Task.FromResult(new GitHubUserProfile("octocat"));
+
+        public Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<GitHubCodespaceRemote>>([]);
+
+        public Task<GitHubCodespaceRemote> CreateCodespaceAsync(string token, CreateCodespaceRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<GitHubCodespaceRemote> StartCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken)
+        {
+            StartCalls++;
+            throw new NotSupportedException();
+        }
+
+        public Task<GitHubCodespaceRemote> StopCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task DeleteCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<GitHubCodespaceExportRemote> ExportCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken) =>
+            Task.FromResult(new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", null, null, null, "https://github.com/settings/billing/usage"));
     }
 
     private sealed class TestHostEnvironment(string contentRootPath) : IHostEnvironment

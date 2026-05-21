@@ -49,6 +49,21 @@ public sealed class ProcessCommandRunnerTests
         Assert.Equal(124, timeout.ExitCode);
     }
 
+    [Fact]
+    public async Task RunAsync_WritesStartFailedEventWhenExecutableIsMissing()
+    {
+        var sink = new CapturingOperationalEventSink();
+        var runner = new ProcessCommandRunner(NullLogger<ProcessCommandRunner>.Instance, sink);
+
+        var result = await runner.RunAsync(new CommandSpec($"missing-command-{Guid.NewGuid():N}", [], TimeSpan.FromSeconds(5), "test.missing"), CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(127, result.ExitCode);
+        var failure = Assert.Single(sink.Events, x => x.EventType == "command.start.failed");
+        Assert.Equal("test.missing", failure.CommandKind);
+        Assert.Equal(127, failure.ExitCode);
+    }
+
     private sealed class CapturingOperationalEventSink : IOperationalEventSink
     {
         public List<OperationalEventWrite> Events { get; } = [];

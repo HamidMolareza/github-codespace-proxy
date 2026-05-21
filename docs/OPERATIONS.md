@@ -25,7 +25,7 @@ The frontend proxies `/api/*` to `http://127.0.0.1:5080`.
 3. Click validate to confirm the PAT belongs to the expected GitHub account.
 4. Click sync to load Codespaces for that account.
 5. Use create/stop/export/delete/refresh from the Codespaces table.
-6. Click the row Run button to start the Codespace proxy. The app starts or resumes the Codespace, verifies remote proxy port `8899`, opens an `autossh` tunnel, starts Xray, and exposes one local mixed port.
+6. Click the row Run button to start the Codespace proxy. The app starts or resumes the Codespace, verifies remote proxy port `8899`, opens an OpenSSH tunnel, starts Xray, and exposes one local mixed port.
 
 PAT values are encrypted at rest and are not displayed after save.
 
@@ -82,7 +82,7 @@ Open:
 http://127.0.0.1:5173
 ```
 
-In Docker mode, Compose sets `LocalProxy__BindHostOverride=0.0.0.0` so the mixed listener can accept Docker-published connections. Host-local execution is still the supported mode for Codespace tunneling because the backend needs access to `gh`, `autossh`, `ssh`, `nc`, and `~/.ssh/codespaces`.
+In Docker mode, Compose sets `LocalProxy__BindHostOverride=0.0.0.0` so the mixed listener can accept Docker-published connections. The backend image includes `gh`, `ssh`, and Xray, and it stores generated Codespaces SSH config under `/app/data/codespaces-ssh`.
 
 Smoke test:
 
@@ -92,6 +92,8 @@ curl http://127.0.0.1:5080/api/health
 curl http://127.0.0.1:5080/api/activity/summary
 curl http://127.0.0.1:5080/api/diagnostics/runtime
 ```
+
+The runtime diagnostics endpoint must report Xray, GitHub CLI, and ssh as found before Run Proxy can start a Codespace-backed local proxy.
 
 Stop:
 
@@ -132,7 +134,7 @@ Secrets are redacted before command output, command display strings, details JSO
 
 ## GitHub Codespaces
 
-The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The Run Proxy action then uses host-local `gh` and `autossh` to reproduce the stable `sp-proxy` tunnel shape: remote `127.0.0.1:8899` to a hidden local tunnel port, then Xray to the public mixed port.
+The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The Run Proxy action then uses `gh` and OpenSSH to reproduce the stable `sp-proxy` tunnel shape: remote `127.0.0.1:8899` to a hidden local tunnel port, then Xray to the public mixed port.
 
 ## Git Commands In This Workspace
 

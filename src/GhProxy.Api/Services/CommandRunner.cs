@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 
 namespace GhProxy.Api.Services;
@@ -54,7 +55,29 @@ public sealed class ProcessCommandRunner(ILogger<ProcessCommandRunner> logger, I
             CommandKind: command.CommandKind,
             CommandDisplay: command.RedactedDisplay),
             cancellationToken);
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex) when (IsProcessStartException(ex))
+        {
+            stopwatch.Stop();
+            var error = $"Could not start command {command.CommandKind}: {ex.Message}";
+            logger.LogError(ex, "Failed to start command {CommandKind}: {Command}", command.CommandKind, command.RedactedDisplay);
+            await events.WriteAsync(new OperationalEventWrite(
+                "command.start.failed",
+                OperationalEventSeverity.Error,
+                $"Failed to start command {command.CommandKind}.",
+                NodeId: command.NodeId,
+                SessionId: command.SessionId,
+                CommandKind: command.CommandKind,
+                CommandDisplay: command.RedactedDisplay,
+                ExitCode: 127,
+                Duration: stopwatch.Elapsed,
+                StandardError: error),
+                cancellationToken);
+            return new CommandResult(127, "", error, Duration: stopwatch.Elapsed);
+        }
 
         var timeout = command.Timeout ?? TimeSpan.FromSeconds(60);
         using var timeoutCts = new CancellationTokenSource(timeout);
@@ -114,7 +137,28 @@ public sealed class ProcessCommandRunner(ILogger<ProcessCommandRunner> logger, I
         process.StartInfo.RedirectStandardError = false;
         process.StartInfo.RedirectStandardInput = false;
         logger.LogInformation("Starting command {CommandKind}: {Command}", command.CommandKind, command.RedactedDisplay);
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex) when (IsProcessStartException(ex))
+        {
+            var error = $"Could not start command {command.CommandKind}: {ex.Message}";
+            logger.LogError(ex, "Failed to start command {CommandKind}: {Command}", command.CommandKind, command.RedactedDisplay);
+            events.WriteAsync(new OperationalEventWrite(
+                "command.start.failed",
+                OperationalEventSeverity.Error,
+                $"Failed to start command {command.CommandKind}.",
+                NodeId: command.NodeId,
+                SessionId: command.SessionId,
+                CommandKind: command.CommandKind,
+                CommandDisplay: command.RedactedDisplay,
+                ExitCode: 127,
+                StandardError: error),
+                CancellationToken.None).GetAwaiter().GetResult();
+            process.Dispose();
+            throw new InvalidOperationException(error, ex);
+        }
         _ = events.WriteAsync(new OperationalEventWrite(
             "command.spawn",
             OperationalEventSeverity.Information,
@@ -135,7 +179,8 @@ public sealed class ProcessCommandRunner(ILogger<ProcessCommandRunner> logger, I
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = false,
-            UseShellExecute = false
+            UseShellExecute = false,
+            WorkingDirectory = GetValidWorkingDirectory()
         };
 
         foreach (var arg in command.Arguments)
@@ -160,6 +205,20 @@ public sealed class ProcessCommandRunner(ILogger<ProcessCommandRunner> logger, I
 
         return new Process { StartInfo = startInfo };
     }
+
+    private static string GetValidWorkingDirectory()
+    {
+        var cwd = Directory.GetCurrentDirectory();
+        if (Directory.Exists(cwd))
+        {
+            return cwd;
+        }
+
+        return Path.GetTempPath();
+    }
+
+    private static bool IsProcessStartException(Exception ex) =>
+        ex is Win32Exception or InvalidOperationException or FileNotFoundException or DirectoryNotFoundException;
 
     private static void TryKill(Process process)
     {

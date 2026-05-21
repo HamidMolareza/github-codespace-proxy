@@ -36,6 +36,7 @@ builder.Services.AddSingleton<ISensitiveDataRedactor, SensitiveDataRedactor>();
 builder.Services.AddSingleton<IOperationalEventSink, OperationalEventSink>();
 builder.Services.AddSingleton<ICommandRunner, ProcessCommandRunner>();
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+builder.Services.AddSingleton<IRuntimeToolChecker, RuntimeToolChecker>();
 builder.Services.AddScoped<DatabaseSchemaInitializer>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<NodeConfigRenderer>();
