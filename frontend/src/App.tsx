@@ -61,8 +61,8 @@ const emptyCodespaceForm: CreateCodespaceForm = {
 const emptyProfileForm: LocalProxyProfileForm = {
   name: '',
   bindHost: '127.0.0.1',
-  localPort: 8901,
-  socksPort: 8901,
+  localPort: 8910,
+  socksPort: 8910,
   proxyUsername: '',
   proxyPassword: '',
   idleShutdownMinutes: 30,

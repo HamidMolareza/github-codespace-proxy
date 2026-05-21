@@ -56,7 +56,7 @@ COPY --from=build /app/publish .
 RUN mkdir -p /app/data/home/.ssh /app/data/codespaces-ssh /app/data/xray /app/data/logs
 
 VOLUME ["/app/data"]
-EXPOSE 8080 8901
+EXPOSE 8080 8910
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD bash -c "</dev/tcp/127.0.0.1/8080" || exit 1

@@ -50,7 +50,7 @@ public sealed class DatabaseSchemaInitializerTests
             {
                 Name = "stale",
                 BindHost = "127.0.0.1",
-                LocalPort = 8901,
+                LocalPort = 8910,
                 IdleShutdownMinutes = 30,
                 Status = GhProxy.Api.Domain.LocalProxyProfileStatus.Running,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -62,7 +62,7 @@ public sealed class DatabaseSchemaInitializerTests
                 ProfileId = profile.Id,
                 Status = GhProxy.Api.Domain.LocalProxySessionStatus.Running,
                 BindHost = "127.0.0.1",
-                LocalPort = 8901,
+                LocalPort = 8910,
                 StartedAt = DateTimeOffset.UtcNow,
                 LastActivityAt = DateTimeOffset.UtcNow
             });

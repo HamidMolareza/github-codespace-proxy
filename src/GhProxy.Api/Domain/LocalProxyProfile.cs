@@ -5,8 +5,8 @@ public sealed class LocalProxyProfile
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "";
     public string BindHost { get; set; } = "127.0.0.1";
-    public int LocalPort { get; set; } = 8901;
-    public int SocksPort { get; set; } = 8901;
+    public int LocalPort { get; set; } = 8910;
+    public int SocksPort { get; set; } = 8910;
     public string? ProxyUsername { get; set; }
     public string? ProtectedProxyPassword { get; set; }
     public int IdleShutdownMinutes { get; set; } = 30;

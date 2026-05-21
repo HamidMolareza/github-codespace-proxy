@@ -10,7 +10,7 @@ public sealed class VpsNode
     public string SshKeyPath { get; set; } = "";
     public string? Region { get; set; }
     public string? Notes { get; set; }
-    public int LocalPort { get; set; } = 8901;
+    public int LocalPort { get; set; } = 8910;
     public int RemoteHttpPort { get; set; } = 3128;
     public int RemoteSocksPort { get; set; } = 1080;
     public string ProxyUsername { get; set; } = "";

@@ -36,7 +36,7 @@ The app uses Codespaces as the proxy backend only for accounts you add and autho
 1. Open `http://127.0.0.1:5173`.
 2. Create a Codespace proxy profile, or let the first Run action create the default profile.
 3. Keep `Bind host` as `127.0.0.1` for direct local runs.
-4. Keep `Proxy port` as `8901` unless that port is already in use.
+4. Keep `Proxy port` as `8910` unless that port is already in use.
 5. Set username/password only if you want proxy authentication.
 6. In the Codespaces tab, click Run Proxy for the selected Codespace.
 7. Wait for Activity to show the Codespace tunnel and Xray readiness events.
@@ -44,19 +44,19 @@ The app uses Codespaces as the proxy backend only for accounts you add and autho
 Manual probe:
 
 ```bash
-curl -x http://127.0.0.1:8901 http://example.com/
-curl --socks5-hostname 127.0.0.1:8901 http://example.com/
+curl -x http://127.0.0.1:8910 http://example.com/
+curl --socks5-hostname 127.0.0.1:8910 http://example.com/
 ```
 
 Shell proxy exports:
 
 ```bash
-export HTTP_PROXY=http://127.0.0.1:8901
-export HTTPS_PROXY=http://127.0.0.1:8901
-export http_proxy=http://127.0.0.1:8901
-export https_proxy=http://127.0.0.1:8901
-export ALL_PROXY=socks5h://127.0.0.1:8901
-export all_proxy=socks5h://127.0.0.1:8901
+export HTTP_PROXY=http://127.0.0.1:8910
+export HTTPS_PROXY=http://127.0.0.1:8910
+export http_proxy=http://127.0.0.1:8910
+export https_proxy=http://127.0.0.1:8910
+export ALL_PROXY=socks5h://127.0.0.1:8910
+export all_proxy=socks5h://127.0.0.1:8910
 export NO_PROXY=localhost,127.0.0.1
 export no_proxy=localhost,127.0.0.1
 ```
@@ -66,7 +66,7 @@ export no_proxy=localhost,127.0.0.1
 The repository includes `compose.yml` for running both services with Linux host networking:
 
 - `backend`: ASP.NET Core API bound to `127.0.0.1:5080` on the host network.
-- `backend` mixed proxy listener: bound to `127.0.0.1:8901` by default.
+- `backend` mixed proxy listener: bound to `127.0.0.1:8910` by default.
 - `frontend`: Node serving the built React app on `127.0.0.1:5173` on the host network.
 - `gh-proxy-data`: named volume for SQLite, JSONL logs, and Data Protection state.
 

@@ -16,7 +16,7 @@ The active workflow manages GitHub username/PAT records and runs a proxy through
 
 - A user can add, edit, view, and delete GitHub account records.
 - A user can validate a PAT and sync Codespaces for that account.
-- A user can click Run Proxy on a Codespace and use both `http://127.0.0.1:8901` and `socks5h://127.0.0.1:8901`.
+- A user can click Run Proxy on a Codespace and use both `http://127.0.0.1:8910` and `socks5h://127.0.0.1:8910`.
 - GitHub `409 Conflict` during start is treated as a refreshable lifecycle state instead of an unhandled exception.
 - Limited accounts block create/start behavior through backend validation.
 - Activity shows GitHub, tunnel, Xray, probe, and idle-stop events with redaction.

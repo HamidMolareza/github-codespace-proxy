@@ -92,7 +92,7 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
                 "Name" TEXT NOT NULL,
                 "BindHost" TEXT NOT NULL,
                 "LocalPort" INTEGER NOT NULL,
-                "SocksPort" INTEGER NOT NULL DEFAULT 8901,
+                "SocksPort" INTEGER NOT NULL DEFAULT 8910,
                 "ProxyUsername" TEXT NULL,
                 "ProtectedProxyPassword" TEXT NULL,
                 "IdleShutdownMinutes" INTEGER NOT NULL,
@@ -114,7 +114,7 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
                 "Status" TEXT NOT NULL,
                 "BindHost" TEXT NOT NULL,
                 "LocalPort" INTEGER NOT NULL,
-                "SocksPort" INTEGER NOT NULL DEFAULT 8901,
+                "SocksPort" INTEGER NOT NULL DEFAULT 8910,
                 "StartedAt" TEXT NOT NULL,
                 "LastActivityAt" TEXT NOT NULL,
                 "StoppedAt" TEXT NULL,
@@ -140,8 +140,8 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
             WHERE "Status" IN ('Starting', 'Running');
             """,
             cancellationToken);
-        await AddColumnIfMissingAsync("LocalProxyProfiles", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8901", cancellationToken);
-        await AddColumnIfMissingAsync("LocalProxySessions", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8901", cancellationToken);
+        await AddColumnIfMissingAsync("LocalProxyProfiles", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8910", cancellationToken);
+        await AddColumnIfMissingAsync("LocalProxySessions", "SocksPort", "\"SocksPort\" INTEGER NOT NULL DEFAULT 8910", cancellationToken);
         await NormalizeLocalProxySocksPortsAsync(cancellationToken);
         await db.Database.ExecuteSqlRawAsync(
             """

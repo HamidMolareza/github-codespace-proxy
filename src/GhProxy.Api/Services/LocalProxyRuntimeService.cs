@@ -800,8 +800,8 @@ public sealed class LocalProxyRuntimeService(
         {
             Name = "Default Codespace Proxy",
             BindHost = "127.0.0.1",
-            LocalPort = 8901,
-            SocksPort = 8901,
+            LocalPort = 8910,
+            SocksPort = 8910,
             IdleShutdownMinutes = 30,
             Notes = "Default one-port Codespace-backed proxy profile.",
             CreatedAt = now,

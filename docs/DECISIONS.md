@@ -12,8 +12,8 @@
 
 ## Local Proxy Boundaries
 
-- The default HTTP proxy endpoint is `http://127.0.0.1:8901`.
-- The default SOCKS proxy endpoint is `socks5h://127.0.0.1:8901`.
+- The default HTTP proxy endpoint is `http://127.0.0.1:8910`.
+- The default SOCKS proxy endpoint is `socks5h://127.0.0.1:8910`.
 - Xray exits through the selected Codespace remote proxy on `127.0.0.1:8899`.
 - Docker Compose uses host networking so Codespace tunnel execution follows the host VPN route.
 - Optional proxy authentication is passed to Xray HTTP and SOCKS inbounds from protected password storage.
