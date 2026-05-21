@@ -132,6 +132,8 @@ The backend stores events in SQLite table `OperationalEvents` and writes local J
 
 Secrets are redacted before command output, command display strings, details JSON, and error messages are persisted.
 
+Use the Activity tab Clear button, or call `DELETE /api/activity`, to delete persisted Activity rows from SQLite and `operational-*.jsonl` files from the configured log directory.
+
 ## GitHub Codespaces
 
 The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The Run Proxy action then uses `gh` and OpenSSH to reproduce the stable `sp-proxy` tunnel shape: remote `127.0.0.1:8899` to a hidden local tunnel port, then Xray to the public mixed port.

@@ -85,6 +85,7 @@ The API writes structured operational events to SQLite and, by default, JSONL fi
 
 - `GET /api/activity`
 - `GET /api/activity/summary`
+- `DELETE /api/activity`
 - `GET /api/diagnostics/runtime`
 
 Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. GitHub API paths/statuses, Codespace tunnel events, Xray proxy events, failures, and bounded snippets are recorded with secret redaction.

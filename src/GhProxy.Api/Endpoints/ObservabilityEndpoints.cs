@@ -97,6 +97,13 @@ public static class ObservabilityEndpoints
                 lastError is null ? null : ToResponse(lastError)));
         });
 
+        group.MapDelete("/activity", async (AppDbContext db, IOptions<ObservabilityOptions> options, CancellationToken ct) =>
+        {
+            var deleted = await db.OperationalEvents.ExecuteDeleteAsync(ct);
+            var deletedFiles = DeleteOperationalJsonlFiles(options.Value.LogDirectory);
+            return Results.Ok(new ActivityClearResponse(deleted, deletedFiles));
+        });
+
         group.MapGet("/diagnostics/runtime", async (AppDbContext db, IOptions<GitHubOptions> githubOptions, IOptions<LocalProxyOptions> localProxyOptions, IHostEnvironment environment, IRuntimeToolChecker toolChecker, CancellationToken ct) =>
         {
             var databaseAvailable = await db.Database.CanConnectAsync(ct);
@@ -135,6 +142,24 @@ public static class ObservabilityEndpoints
             evt.StandardOutputSnippet,
             evt.StandardErrorSnippet,
             evt.DetailsJson);
+    }
+
+    private static int DeleteOperationalJsonlFiles(string logDirectory)
+    {
+        var directory = Path.GetFullPath(logDirectory);
+        if (!Directory.Exists(directory))
+        {
+            return 0;
+        }
+
+        var deleted = 0;
+        foreach (var path in Directory.EnumerateFiles(directory, "operational-*.jsonl", SearchOption.TopDirectoryOnly))
+        {
+            File.Delete(path);
+            deleted++;
+        }
+
+        return deleted;
     }
 
 }

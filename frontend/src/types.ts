@@ -159,6 +159,11 @@ export interface ActivitySummary {
   lastError?: OperationalEvent | null;
 }
 
+export interface ActivityClearResult {
+  deletedCount: number;
+  deletedFileCount: number;
+}
+
 export interface RuntimeDiagnostics {
   databaseAvailable: boolean;
   tools: ToolDiagnostic[];

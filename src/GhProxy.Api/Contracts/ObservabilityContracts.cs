@@ -26,6 +26,8 @@ public sealed record ActivitySummaryResponse(
     double? AverageCommandDurationMs,
     OperationalEventResponse? LastError);
 
+public sealed record ActivityClearResponse(int DeletedCount, int DeletedFileCount);
+
 public sealed record RuntimeDiagnosticsResponse(
     bool DatabaseAvailable,
     IReadOnlyList<ToolDiagnosticResponse> Tools);

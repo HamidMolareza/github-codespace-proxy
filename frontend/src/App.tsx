@@ -346,6 +346,33 @@ export default function App() {
     await runAction('refresh-activity', () => loadActivity(activityFilters));
   }
 
+  async function clearActivity() {
+    if (!confirmAction('Delete all Activity log entries?')) {
+      return;
+    }
+
+    setBusy('clear-activity');
+    setNotice({ kind: 'info', text: 'clear activity' });
+    try {
+      const result = await api.clearActivity();
+      setActivityEvents([]);
+      setActivitySummary({
+        recentCount: 0,
+        errorCount: 0,
+        warningCount: 0,
+        commandFailureCount: 0,
+        averageCommandDurationMs: null,
+        lastError: null
+      });
+      setSelectedEvent(null);
+      setNotice({ kind: 'info', text: `Deleted ${result.deletedCount} activity log entries and ${result.deletedFileCount} log files.` });
+    } catch (error) {
+      setNotice({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -445,6 +472,7 @@ export default function App() {
           summary={activitySummary}
           onApplyFilters={applyActivityFilters}
           onCloseEvent={() => setSelectedEvent(null)}
+          onClear={clearActivity}
           onRefresh={() => runAction('refresh-activity', () => loadActivity(activityFilters))}
           onSelectEvent={setSelectedEvent}
           onUpdateFilter={updateActivityFilter}
@@ -914,6 +942,7 @@ interface ActivityPanelProps {
   summary: ActivitySummary | null;
   onApplyFilters: (event: FormEvent) => Promise<void>;
   onCloseEvent: () => void;
+  onClear: () => void;
   onRefresh: () => void;
   onSelectEvent: (event: OperationalEvent) => void;
   onUpdateFilter: <K extends keyof ActivityFilters>(field: K, value: ActivityFilters[K]) => void;
@@ -928,6 +957,7 @@ function ActivityPanel({
   summary,
   onApplyFilters,
   onCloseEvent,
+  onClear,
   onRefresh,
   onSelectEvent,
   onUpdateFilter
@@ -1000,6 +1030,10 @@ function ActivityPanel({
         <button type="button" className="secondary" onClick={onRefresh} disabled={busy !== null}>
           <RefreshCw size={16} />
           Refresh
+        </button>
+        <button type="button" className="danger" onClick={onClear} disabled={busy !== null || events.length === 0}>
+          <Trash2 size={16} />
+          Clear
         </button>
       </form>
 

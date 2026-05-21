@@ -1,4 +1,5 @@
 import type {
+  ActivityClearResult,
   ActivityFilters,
   ActivitySummary,
   CodespaceSnapshot,
@@ -141,6 +142,7 @@ export const api = {
     return request<OperationalEvent[]>(`/api/activity?${params.toString()}`);
   },
   activitySummary: () => request<ActivitySummary>('/api/activity/summary'),
+  clearActivity: () => request<ActivityClearResult>('/api/activity', { method: 'DELETE' }),
   runtimeDiagnostics: () => request<RuntimeDiagnostics>('/api/diagnostics/runtime')
 };
 

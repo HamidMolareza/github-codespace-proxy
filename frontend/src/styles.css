@@ -550,7 +550,7 @@ select:focus {
 
 .activity-filters {
   display: grid;
-  grid-template-columns: minmax(130px, 0.8fr) repeat(3, minmax(150px, 1fr)) minmax(90px, 0.5fr) auto auto;
+  grid-template-columns: minmax(130px, 0.8fr) repeat(3, minmax(150px, 1fr)) minmax(90px, 0.5fr) auto auto auto;
   gap: 12px;
   align-items: end;
   padding: 18px;
