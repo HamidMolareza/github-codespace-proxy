@@ -33,6 +33,7 @@ import type {
   GitHubAccountForm,
   GitHubLifecycleResult,
   GitHubUsage,
+  LocalProxyAutomationStatus,
   LocalProxyProfile,
   LocalProxySettingsForm,
   LocalProxyResult,
@@ -85,6 +86,7 @@ export default function App() {
   const [usage, setUsage] = useState<GitHubUsage | null>(null);
   const [profiles, setProfiles] = useState<LocalProxyProfile[]>([]);
   const [localSession, setLocalSession] = useState<LocalProxySession | null>(null);
+  const [localStatus, setLocalStatus] = useState<LocalProxyAutomationStatus | null>(null);
   const [activityEvents, setActivityEvents] = useState<OperationalEvent[]>([]);
   const [activitySummary, setActivitySummary] = useState<ActivitySummary | null>(null);
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null);
@@ -131,7 +133,9 @@ export default function App() {
   }, [selectedAccountId]);
 
   const loadLocalProxy = useCallback(async () => {
-    const settings = await api.localProxySettings();
+    const status = await api.localProxyStatus();
+    const settings = status.settings;
+    setLocalStatus(status);
     setProfiles([settings]);
     setSettingsForm((current) => ({
       bindHost: settings.bindHost,
@@ -140,11 +144,7 @@ export default function App() {
       proxyPassword: current.proxyPassword,
       idleShutdownMinutes: settings.idleShutdownMinutes
     }));
-    try {
-      setLocalSession((await api.localProxySession()) ?? null);
-    } catch {
-      setLocalSession(null);
-    }
+    setLocalSession(status.session ?? null);
   }, []);
 
   const loadActivity = useCallback(async (filters = activityFilters) => {
@@ -428,6 +428,7 @@ export default function App() {
           profiles={profiles}
           selectedProfile={selectedProfile}
           session={localSession}
+          status={localStatus}
           onProbe={() => runAction('probe-local-proxy', () => api.probeLocalProxy())}
           onSaveSettings={saveSettings}
           onStop={() => runAction('stop-local-proxy', () => api.stopLocalProxy())}
@@ -747,6 +748,7 @@ interface LocalProxyPanelProps {
   profiles: LocalProxyProfile[];
   selectedProfile: LocalProxyProfile | null;
   session: LocalProxySession | null;
+  status: LocalProxyAutomationStatus | null;
   onProbe: () => void;
   onSaveSettings: (event: FormEvent) => Promise<void>;
   onStop: () => void;
@@ -759,6 +761,7 @@ function LocalProxyPanel({
   profiles,
   selectedProfile,
   session,
+  status,
   onProbe,
   onSaveSettings,
   onStop,
@@ -782,8 +785,9 @@ function LocalProxyPanel({
     <>
       <section className="active-strip">
         <span className={`badge ${badgeClass(session?.status ?? 'Stopped')}`}>{session?.status ?? 'Stopped'}</span>
-        <strong>{session ? session.profileName : 'No active Codespace proxy session'}</strong>
+        <strong>{session ? session.profileName : 'Gateway waiting for proxy traffic'}</strong>
         {session && <span>{session.activeConnections} active / {session.totalRequests} requests</span>}
+        {!session && <span>{settings ? `${settings.bindHost}:${settings.localPort}` : 'Loading settings'}</span>}
         <div className="active-actions">
           <button title="Stop active proxy" onClick={onStop} disabled={busy !== null || !session}>
             <Square size={17} />
@@ -872,8 +876,12 @@ function LocalProxyPanel({
               <div className="node-meta">
                 <span>{settings.idleShutdownMinutes}m idle</span>
                 <span>{settings.requiresAuthentication ? `auth ${settings.proxyUsername}` : 'no auth'}</span>
+                <span>{status?.phase ?? 'WaitingForTraffic'}</span>
+                {status?.selectedAccount && <span>{status.selectedAccount}</span>}
                 {session?.codespaceName && <span>{session.codespaceName}</span>}
               </div>
+              {status?.warning && <p className="muted warning-text">{status.warning}</p>}
+              {status?.lastError && <p className="muted warning-text">{status.lastError}</p>}
             </article>
           )}
         </section>

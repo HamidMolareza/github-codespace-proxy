@@ -14,4 +14,10 @@ public sealed class LocalProxyOptions
     public int CodespaceTunnelReadyTimeoutSeconds { get; set; } = 30;
     public int CodespaceStartTimeoutSeconds { get; set; } = 180;
     public int CodespaceSshConfigTimeoutSeconds { get; set; } = 120;
+    public string CodespaceRepositoryOwner { get; set; } = "wproxy97";
+    public string CodespaceRepositoryName { get; set; } = "proxy2";
+    public string CodespaceRepositoryRef { get; set; } = "main";
+    public string CodespaceGeo { get; set; } = "UsEast";
+    public string CodespaceMachine { get; set; } = "basicLinux32gb";
+    public string CodespaceDisplayName { get; set; } = "gh-proxy";
 }

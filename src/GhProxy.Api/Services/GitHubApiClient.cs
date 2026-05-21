@@ -39,6 +39,8 @@ public sealed record GitHubCodespaceRemote(
 public interface IGitHubApiClient
 {
     Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken);
+    Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken);
+    Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken);
     Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken);
     Task<GitHubCodespaceRemote> CreateCodespaceAsync(string token, CreateCodespaceRequest request, CancellationToken cancellationToken);
     Task<GitHubCodespaceRemote> StartCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
@@ -62,6 +64,53 @@ public sealed class GitHubApiClient(
     {
         using var document = await SendAsync(token, HttpMethod.Get, "user", null, "github.user.get", cancellationToken);
         return new GitHubUserProfile(GetString(document.RootElement, "login") ?? string.Empty);
+    }
+
+    public async Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var _ = await SendAsync(
+                token,
+                HttpMethod.Get,
+                $"repos/{Uri.EscapeDataString(owner.Trim())}/{Uri.EscapeDataString(repository.Trim())}",
+                null,
+                "github.repository.get",
+                cancellationToken);
+            return true;
+        }
+        catch (GitHubApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    public async Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken)
+    {
+        var payload = new Dictionary<string, object?> { ["default_branch_only"] = true };
+        var response = await SendCoreAsync(
+            token,
+            HttpMethod.Post,
+            $"repos/{Uri.EscapeDataString(owner.Trim())}/{Uri.EscapeDataString(repository.Trim())}/forks",
+            payload,
+            "github.repository.fork",
+            cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (response.IsSuccessStatusCode)
+        {
+            await WriteSuccessAsync("github.repository.fork", response, cancellationToken);
+            return;
+        }
+
+        if (response.StatusCode == HttpStatusCode.UnprocessableEntity &&
+            content.Contains("already", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteSuccessAsync("github.repository.fork", response, cancellationToken);
+            return;
+        }
+
+        await WriteFailureAsync("github.repository.fork", response, content, cancellationToken);
+        throw new GitHubApiException(response.StatusCode, $"GitHub API returned {(int)response.StatusCode} {response.ReasonPhrase}.", content);
     }
 
     public async Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken)

@@ -40,14 +40,21 @@ public static class LocalProxyEndpoints
         {
             var settings = await GetOrCreateSettingsProfileAsync(db, clock, ct);
             var session = await runtime.GetActiveAsync(ct);
-            var phase = session?.Status.ToString() ?? settings.Status.ToString();
+            var selectedAccount = session?.AccountId is null
+                ? null
+                : await db.GitHubAccounts
+                    .AsNoTracking()
+                    .Where(x => x.Id == session.AccountId.Value)
+                    .Select(x => x.Username)
+                    .FirstOrDefaultAsync(ct);
+            var phase = session?.Status.ToString() ?? "WaitingForTraffic";
             return Results.Ok(new LocalProxyAutomationStatusResponse(
                 ToResponse(settings),
                 ToResponse(session),
                 phase,
-                session?.AccountId is null ? null : session.AccountId.Value.ToString(),
+                selectedAccount,
                 session?.CodespaceName,
-                null,
+                runtime.GetLastAutomationWarning(),
                 null,
                 session?.LastError));
         });

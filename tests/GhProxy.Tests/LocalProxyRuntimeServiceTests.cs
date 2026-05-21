@@ -250,6 +250,12 @@ public sealed class LocalProxyRuntimeServiceTests
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult(new GitHubUserProfile("octocat"));
 
+        public Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
+            Task.FromResult(true);
+
+        public Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
         public Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<GitHubCodespaceRemote>>([]);
 
