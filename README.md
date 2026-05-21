@@ -50,7 +50,7 @@ Host-network endpoints:
 - Backend API: `127.0.0.1:5080`
 - Codespace proxy: `127.0.0.1:8910` for both HTTP and SOCKS5
 
-Compose uses Linux host networking so `gh codespace ssh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, sets `HOME=/app/data/home`, and stores generated Codespaces SSH config under `/app/data/codespaces-ssh`. The SSH config refresh is scoped to the selected Codespace and defaults to a 120 second timeout via `LocalProxy__CodespaceSshConfigTimeoutSeconds`.
+Compose uses Linux host networking so `gh codespace ssh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, sets `HOME=/app/data/home`, and stores generated Codespaces SSH config under `/app/data/codespaces-ssh`. The SSH config refresh is scoped to the selected Codespace and defaults to a 120 second timeout via `LocalProxy__CodespaceSshConfigTimeoutSeconds`. Startup also verifies the `proxy2` mixed proxy inside the Codespace and starts `proxy` on `127.0.0.1:8899` if it is not already listening.
 
 Check the stack:
 

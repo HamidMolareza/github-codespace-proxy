@@ -678,14 +678,7 @@ public sealed class LocalProxyRuntimeService(
             cancellationToken);
 
         var sshConfigPath = await RefreshCodespacesSshConfigAsync(launch, sessionId, cancellationToken);
-
-        await RunRequiredAsync(
-            "codespace.proxy.remote_probe",
-            ["codespace", "ssh", "-c", launch.CodespaceName, $"timeout 3 bash -lc '</dev/tcp/127.0.0.1/{launch.RemoteProxyPort}'"],
-            launch,
-            sessionId,
-            TimeSpan.FromSeconds(20),
-            cancellationToken);
+        await EnsureCodespaceRemoteProxyAsync(launch, sessionId, cancellationToken);
 
         var sshHost = $"cs.{launch.CodespaceName}.main";
         var command = new CommandSpec(
@@ -735,6 +728,68 @@ public sealed class LocalProxyRuntimeService(
         throw new InvalidOperationException($"Timed out waiting for tunnel port {localTunnelPort}.");
     }
 
+    private async Task EnsureCodespaceRemoteProxyAsync(CodespaceProxyLaunch launch, Guid sessionId, CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_options.CodespaceRemoteProxyStartupTimeoutSeconds, 45, 600));
+        var dashboardPort = Math.Clamp(_options.CodespaceRemoteDashboardPort, 1, 65535);
+
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.remote_proxy.ensure.starting",
+            OperationalEventSeverity.Information,
+            "Ensuring the proxy2 process is listening inside the Codespace.",
+            NodeId: launch.AccountId,
+            SessionId: sessionId,
+            Details: new
+            {
+                launch.Username,
+                launch.CodespaceName,
+                launch.RemoteProxyPort,
+                RemoteDashboardPort = dashboardPort,
+                RemoteProxyCommand = _options.CodespaceRemoteProxyCommand,
+                TimeoutSeconds = (int)timeout.TotalSeconds
+            }),
+            cancellationToken);
+
+        await RunRequiredAsync(
+            "codespace.proxy.remote_ensure",
+            ["codespace", "ssh", "-c", launch.CodespaceName, BuildRemoteProxyEnsureCommand(launch.RemoteProxyPort, dashboardPort)],
+            launch,
+            sessionId,
+            timeout,
+            cancellationToken);
+
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.remote_proxy.ready",
+            OperationalEventSeverity.Information,
+            "The proxy2 process is listening inside the Codespace.",
+            NodeId: launch.AccountId,
+            SessionId: sessionId,
+            Details: new { launch.CodespaceName, launch.RemoteProxyPort, RemoteDashboardPort = dashboardPort }),
+            cancellationToken);
+    }
+
+    private string BuildRemoteProxyEnsureCommand(int proxyPort, int dashboardPort)
+    {
+        var proxyCommand = string.IsNullOrWhiteSpace(_options.CodespaceRemoteProxyCommand)
+            ? "proxy"
+            : _options.CodespaceRemoteProxyCommand.Trim();
+        var script = string.Join('\n',
+            "set -u",
+            $"proxy_port={proxyPort}",
+            $"dashboard_port={dashboardPort}",
+            $"proxy_command={QuoteForBash(proxyCommand)}",
+            "mkdir -p /tmp/proxy-local",
+            "if timeout 2 bash -lc \"</dev/tcp/127.0.0.1/${proxy_port}\"; then echo \"remote proxy already listening on ${proxy_port}\"; exit 0; fi",
+            "if ! command -v \"${proxy_command}\" >/dev/null 2>&1; then echo \"proxy command '${proxy_command}' was not found in the Codespace. Ensure this Codespace uses the proxy2 devcontainer image.\" >&2; exit 127; fi",
+            "nohup \"${proxy_command}\" --bind 127.0.0.1 --mixed-port \"${proxy_port}\" --dashboard-bind 127.0.0.1 --dashboard-port \"${dashboard_port}\" --usage-log-file /tmp/proxy-local/usage.log >/tmp/proxy-local/proxy.log 2>&1 &",
+            "for _ in $(seq 1 30); do if timeout 1 bash -lc \"</dev/tcp/127.0.0.1/${proxy_port}\"; then echo \"remote proxy started on ${proxy_port}\"; exit 0; fi; sleep 1; done",
+            "echo \"remote proxy did not listen on ${proxy_port}\" >&2",
+            "tail -80 /tmp/proxy-local/proxy.log >&2 || true",
+            "exit 1");
+
+        return $"bash -lc {QuoteForBash(script)}";
+    }
+
     private async Task<string> RefreshCodespacesSshConfigAsync(CodespaceProxyLaunch launch, Guid sessionId, CancellationToken cancellationToken)
     {
         var timeout = TimeSpan.FromSeconds(Math.Clamp(_options.CodespaceSshConfigTimeoutSeconds, 30, 600));
@@ -773,6 +828,8 @@ public sealed class LocalProxyRuntimeService(
             cancellationToken);
         return target;
     }
+
+    private static string QuoteForBash(string value) => $"'{value.Replace("'", "'\"'\"'", StringComparison.Ordinal)}'";
 
     private async Task<CommandResult> RunRequiredAsync(
         string kind,
