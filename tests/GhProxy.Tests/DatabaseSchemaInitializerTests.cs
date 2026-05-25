@@ -22,11 +22,11 @@ public sealed class DatabaseSchemaInitializerTests
                 """
                 SELECT name AS Value
                 FROM sqlite_master
-                WHERE type = 'table' AND name IN ('OperationalEvents', 'GitHubAccounts', 'CodespaceSnapshots', 'LocalProxyProfiles', 'LocalProxySessions')
+                WHERE type = 'table' AND name IN ('OperationalEvents', 'GitHubAccounts', 'CodespaceSnapshots', 'CodespaceStateSamples', 'LocalProxyProfiles', 'LocalProxySessions', 'LocalProxyGatewayRequests')
                 ORDER BY name
                 """)
                 .ToListAsync();
-            Assert.Equal(["CodespaceSnapshots", "GitHubAccounts", "LocalProxyProfiles", "LocalProxySessions", "OperationalEvents"], tables);
+            Assert.Equal(["CodespaceSnapshots", "CodespaceStateSamples", "GitHubAccounts", "LocalProxyGatewayRequests", "LocalProxyProfiles", "LocalProxySessions", "OperationalEvents"], tables);
             var localProxySessionColumns = await db.Database.SqlQueryRaw<string>(
                 """
                 SELECT name AS Value
@@ -38,6 +38,25 @@ public sealed class DatabaseSchemaInitializerTests
             Assert.Contains("AccountId", localProxySessionColumns);
             Assert.Contains("CodespaceName", localProxySessionColumns);
             Assert.Contains("RemoteProxyPort", localProxySessionColumns);
+            var stateSampleIndexes = await db.Database.SqlQueryRaw<string>(
+                """
+                SELECT name AS Value
+                FROM sqlite_master
+                WHERE type = 'index' AND tbl_name = 'CodespaceStateSamples'
+                ORDER BY name
+                """)
+                .ToListAsync();
+            Assert.Contains("IX_CodespaceStateSamples_ObservedAt", stateSampleIndexes);
+            var gatewayRequestIndexes = await db.Database.SqlQueryRaw<string>(
+                """
+                SELECT name AS Value
+                FROM sqlite_master
+                WHERE type = 'index' AND tbl_name = 'LocalProxyGatewayRequests'
+                ORDER BY name
+                """)
+                .ToListAsync();
+            Assert.Contains("IX_LocalProxyGatewayRequests_ObservedAt", gatewayRequestIndexes);
+            Assert.Contains("IX_LocalProxyGatewayRequests_SessionId", gatewayRequestIndexes);
         }
         finally
         {

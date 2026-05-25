@@ -2,6 +2,7 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   CircleStop,
   Cloud,
@@ -41,6 +42,8 @@ import type {
   LocalProxySettingsForm,
   LocalProxyResult,
   LocalProxySession,
+  LocalProxyStatistics,
+  LocalProxyStatisticsPeriod,
   OperationalEvent,
   RuntimeDiagnostics
 } from './types';
@@ -79,7 +82,8 @@ const defaultActivityFilters: ActivityFilters = {
 };
 
 const appTimeZone = 'Asia/Tehran';
-const appTabs = ['codespaces', 'local-proxy', 'activity'] as const;
+const appTabs = ['codespaces', 'local-proxy', 'statistics', 'activity'] as const;
+const statisticsPeriods: LocalProxyStatisticsPeriod[] = ['24h', '7d', '30d'];
 const themePreferences = ['system', 'light', 'dark'] as const;
 
 type AppTab = (typeof appTabs)[number];
@@ -96,6 +100,8 @@ export default function App() {
   const [profiles, setProfiles] = useState<LocalProxyProfile[]>([]);
   const [localSession, setLocalSession] = useState<LocalProxySession | null>(null);
   const [localStatus, setLocalStatus] = useState<LocalProxyAutomationStatus | null>(null);
+  const [statistics, setStatistics] = useState<LocalProxyStatistics | null>(null);
+  const [statisticsPeriod, setStatisticsPeriod] = useState<LocalProxyStatisticsPeriod>('24h');
   const [activityEvents, setActivityEvents] = useState<OperationalEvent[]>([]);
   const [activitySummary, setActivitySummary] = useState<ActivitySummary | null>(null);
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null);
@@ -180,10 +186,15 @@ export default function App() {
     setDiagnostics(runtimeDiagnostics);
   }, [activityFilters]);
 
+  const loadStatistics = useCallback(async (period = statisticsPeriod) => {
+    const nextStatistics = await api.localProxyStatistics(period);
+    setStatistics(nextStatistics);
+  }, [statisticsPeriod]);
+
   const loadAll = useCallback(async () => {
     await loadAccounts();
-    await Promise.all([loadLocalProxy(), loadActivity()]);
-  }, [loadAccounts, loadActivity, loadLocalProxy]);
+    await Promise.all([loadLocalProxy(), loadStatistics(), loadActivity()]);
+  }, [loadAccounts, loadActivity, loadLocalProxy, loadStatistics]);
 
   useEffect(() => {
     loadAll().catch((error) => setNotice({ kind: 'error', text: errorMessage(error) }));
@@ -204,10 +215,11 @@ export default function App() {
       loadAccounts().catch(() => undefined);
       loadCodespaces().catch(() => undefined);
       loadLocalProxy().catch(() => undefined);
+      loadStatistics().catch(() => undefined);
       loadActivity().catch(() => undefined);
     }, 20000);
     return () => window.clearInterval(timer);
-  }, [loadAccounts, loadActivity, loadCodespaces, loadLocalProxy]);
+  }, [loadAccounts, loadActivity, loadCodespaces, loadLocalProxy, loadStatistics]);
 
   async function runAction(label: string, action: () => Promise<unknown>) {
     setBusy(label);
@@ -383,6 +395,11 @@ export default function App() {
     }
   }
 
+  async function changeStatisticsPeriod(period: LocalProxyStatisticsPeriod) {
+    setStatisticsPeriod(period);
+    await runAction('refresh-statistics', () => loadStatistics(period));
+  }
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -432,6 +449,10 @@ export default function App() {
         <button className={activeTab === 'local-proxy' ? 'active-tab' : ''} onClick={() => selectTab('local-proxy')}>
           <Wifi size={16} />
           Codespace Proxy
+        </button>
+        <button className={activeTab === 'statistics' ? 'active-tab' : ''} onClick={() => selectTab('statistics')}>
+          <BarChart3 size={16} />
+          Statistics
         </button>
         <button className={activeTab === 'activity' ? 'active-tab' : ''} onClick={() => selectTab('activity')}>
           <Activity size={16} />
@@ -484,6 +505,16 @@ export default function App() {
           onSaveSettings={saveSettings}
           onStop={() => runAction('stop-local-proxy', () => api.stopLocalProxy())}
           onUpdateField={updateSettingsField}
+        />
+      )}
+
+      {activeTab === 'statistics' && (
+        <StatisticsPanel
+          busy={busy}
+          period={statisticsPeriod}
+          statistics={statistics}
+          onChangePeriod={changeStatisticsPeriod}
+          onRefresh={() => runAction('refresh-statistics', () => loadStatistics(statisticsPeriod))}
         />
       )}
 
@@ -798,6 +829,7 @@ function CodespaceTable({ busy, codespaceProgress, codespaces, codespaceProxyRea
         <span>Repository</span>
         <span>State</span>
         <span>Machine</span>
+        <span>Geo</span>
         <span>Last used</span>
         <span>Actions</span>
       </div>
@@ -815,7 +847,8 @@ function CodespaceTable({ busy, codespaceProgress, codespaces, codespaceProxyRea
             </span>
             <span>{codespace.repositoryFullName ?? ''}</span>
             <span className={`badge ${badgeClass(progress ?? codespace.state)}`}>{progress ?? codespace.state}</span>
-            <span>{codespace.machineDisplayName ?? codespace.location ?? ''}</span>
+            <span>{codespace.machineDisplayName ?? ''}</span>
+            <span>{codespace.location ?? ''}</span>
             <span>{codespace.lastUsedAt ? formatDate(codespace.lastUsedAt) : ''}</span>
             <span className="row-actions">
               <button title={codespaceProxyReady ? (isActiveCodespace ? 'Codespace is already started' : 'Start Codespace proxy') : 'Runtime tools are missing'} onClick={() => onStart(selectedAccountId, codespace.name)} disabled={busy !== null || !codespaceProxyReady || isActiveCodespace || isActiveProxy}>
@@ -877,6 +910,9 @@ function LocalProxyPanel({
   const statusMessage = status?.message ?? (session ? 'Proxy is up.' : 'Proxy is idle.');
   const retryText = status?.retryInSeconds !== null && status?.retryInSeconds !== undefined
     ? `Retry in ${status.retryInSeconds}s`
+    : null;
+  const idleWakeText = status?.idleWakePaused && status.idleWakeRequestThreshold > 1
+    ? `Wake requests ${status.idleWakeRequestCount}/${status.idleWakeRequestThreshold}`
     : null;
   const lastRequestAt = status?.lastRequestAt ?? session?.lastRequestAt ?? null;
   const idleSummary = session ? buildIdleSummary(session) : null;
@@ -993,6 +1029,8 @@ function LocalProxyPanel({
                 <span>{settings.requiresAuthentication ? `auth ${settings.proxyUsername}` : 'no auth'}</span>
                 <span>{status?.phase ?? 'WaitingForTraffic'}</span>
                 {retryText && <span>{retryText}</span>}
+                {idleWakeText && <span>{idleWakeText}</span>}
+                {status?.idleWakePaused && status.idleWakeWindowExpiresAt && <span>Wake window until {formatDateTime(status.idleWakeWindowExpiresAt)}</span>}
                 {idleSummary && <span>Idle for {idleSummary.idleFor}</span>}
                 {idleSummary && <span>Stops Codespace in {idleSummary.stopIn}</span>}
                 <span>Latest request: {lastRequestAt ? formatDateTime(lastRequestAt) : 'Never'}</span>
@@ -1008,9 +1046,179 @@ function LocalProxyPanel({
               {status?.lastError && <p className="muted warning-text">{status.lastError}</p>}
             </article>
           )}
+
+          <article className="node-card proxy-requests-card">
+            <div className="section-title">
+              <Activity size={20} />
+              <h2>Latest Requests</h2>
+            </div>
+            {!status || status.latestRequests.length === 0 ? (
+              <div className="empty-state">No proxy requests recorded yet.</div>
+            ) : (
+              <div className="proxy-request-list">
+                {status.latestRequests.map((request) => (
+                  <div className="proxy-request-row" key={request.id} title={request.errorMessage ?? undefined}>
+                    <span>{formatDateTime(request.observedAt)}</span>
+                    <strong>{request.protocol}</strong>
+                    <span>{requestTargetLabel(request.targetHost, request.targetPort)}</span>
+                    <span className={`badge ${requestOutcomeBadge(request.outcome)}`}>{request.outcome}</span>
+                    <span>{request.codespaceName ?? 'No Codespace'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
         </section>
       </section>
     </>
+  );
+}
+
+interface StatisticsPanelProps {
+  busy: string | null;
+  period: LocalProxyStatisticsPeriod;
+  statistics: LocalProxyStatistics | null;
+  onChangePeriod: (period: LocalProxyStatisticsPeriod) => Promise<void>;
+  onRefresh: () => void;
+}
+
+function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }: StatisticsPanelProps) {
+  const buckets = period === '24h' ? (statistics?.hourlyBuckets ?? []) : (statistics?.dailyBuckets ?? []);
+  return (
+    <section className="activity-panel">
+      <div className="activity-summary stats-summary">
+        <StatusTile icon={<Wifi size={20} />} label="Active" value={statistics ? formatDurationSeconds(statistics.totals.activeSeconds) : 'Loading'} />
+        <StatusTile icon={<CircleStop size={20} />} label="Off" value={statistics ? formatDurationSeconds(statistics.totals.offSeconds) : 'Loading'} />
+        <StatusTile icon={<AlertTriangle size={20} />} label="Error" value={statistics ? formatDurationSeconds(statistics.totals.errorSeconds) : 'Loading'} />
+        <StatusTile icon={<BarChart3 size={20} />} label="Active percent" value={statistics ? `${statistics.totals.activePercent}%` : 'Loading'} />
+        <StatusTile icon={<Activity size={20} />} label="Sessions" value={statistics ? String(statistics.totals.sessionCount) : 'Loading'} />
+      </div>
+
+      <section className="activity-filters compact">
+        <div className="section-title">
+          <BarChart3 size={20} />
+          <h2>Codespace Proxy Statistics</h2>
+        </div>
+        <div className="segmented-control">
+          {statisticsPeriods.map((item) => (
+            <button
+              className={period === item ? 'active-option' : ''}
+              disabled={busy !== null}
+              key={item}
+              onClick={() => onChangePeriod(item)}
+              type="button"
+            >
+              {periodLabel(item)}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="secondary" onClick={onRefresh} disabled={busy !== null}>
+          <RefreshCw size={16} />
+          Refresh
+        </button>
+      </section>
+
+      {statistics && (
+        <section className="stats-range">
+          <span>{formatDateTime(statistics.rangeStart)}</span>
+          <span>{formatDateTime(statistics.rangeEnd)}</span>
+          <span>{statistics.timeZone}</span>
+          {period !== '24h' && <span>Average active {formatDurationSeconds(statistics.totals.averageActiveSecondsPerDay)} / day</span>}
+          <span className="stats-legend-item">
+            <i className="stats-swatch active" /> Active
+          </span>
+          <span className="stats-legend-item">
+            <i className="stats-swatch error" /> Error
+          </span>
+          <span className="stats-legend-item">
+            <i className="stats-swatch off" /> Idle/off
+          </span>
+        </section>
+      )}
+
+      <section className="stats-chart">
+        {statistics === null ? (
+          <div className="empty-state">Loading statistics.</div>
+        ) : buckets.length === 0 ? (
+          <div className="empty-state">No statistics are available for this period.</div>
+        ) : (
+          buckets.map((bucket) => {
+            const activePercent = Math.max(0, Math.min(100, bucket.activePercent));
+            const errorPercent = Math.max(0, Math.min(100 - activePercent, bucket.errorPercent));
+            const offPercent = Math.max(0, Math.min(100 - activePercent - errorPercent, 100));
+            return (
+              <div className="stats-bar-row" key={`${bucket.start}-${bucket.end}`}>
+                <span>{bucket.label}</span>
+                <div
+                  className="stats-bar"
+                  title={`${formatDurationSeconds(bucket.activeSeconds)} active, ${formatDurationSeconds(bucket.errorSeconds)} error, ${formatDurationSeconds(bucket.offSeconds)} idle/off`}
+                >
+                  <div className="stats-bar-active" style={{ width: `${activePercent}%` }} />
+                  <div className="stats-bar-error" style={{ width: `${errorPercent}%` }} />
+                  <div className="stats-bar-off" style={{ width: `${offPercent}%` }} />
+                </div>
+                <strong>{formatDurationSeconds(bucket.activeSeconds)}</strong>
+                <span>{formatDurationSeconds(bucket.errorSeconds)}</span>
+                <span>{bucket.activePercent}% / {bucket.errorPercent}%</span>
+              </div>
+            );
+          })
+        )}
+      </section>
+
+      {statistics && statistics.mismatches.length > 0 && (
+        <section className="notice warning">
+          <AlertTriangle size={18} />
+          <span>{statistics.mismatches.length} GitHub active sample(s) happened while the app proxy was not active.</span>
+        </section>
+      )}
+
+      {statistics && (
+        <section className="stats-grid">
+          <article className="editor">
+            <div className="section-title">
+              <Monitor size={20} />
+              <h2>Recent Sessions</h2>
+            </div>
+            {statistics.sessions.length === 0 ? (
+              <div className="empty-state">No app-managed proxy sessions in this period.</div>
+            ) : (
+              <div className="stats-session-list">
+                {statistics.sessions.slice(0, 12).map((session) => (
+                  <div className="stats-session-row" key={session.sessionId}>
+                    <span>{formatDateTime(session.startedAt)}</span>
+                    <span>{session.codespaceName ?? 'Codespace'}</span>
+                    <strong>{formatDurationSeconds(session.activeSeconds)}</strong>
+                    <span className={`badge ${badgeClass(session.status)}`}>{session.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+
+          <article className="editor">
+            <div className="section-title">
+              <Github size={20} />
+              <h2>GitHub Samples</h2>
+            </div>
+            {statistics.gitHubSamples.length === 0 ? (
+              <div className="empty-state">No GitHub state samples in this period.</div>
+            ) : (
+              <div className="stats-session-list">
+                {statistics.gitHubSamples.slice(0, 12).map((sample) => (
+                  <div className="stats-session-row" key={`${sample.accountId}-${sample.codespaceName}-${sample.observedAt}`}>
+                    <span>{formatDateTime(sample.observedAt)}</span>
+                    <span>{sample.codespaceName}</span>
+                    <strong>{sample.state}</strong>
+                    <span>{sample.source}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+        </section>
+      )}
+    </section>
   );
 }
 
@@ -1317,6 +1525,42 @@ function formatDuration(milliseconds: number) {
   }
 
   return `${seconds}s`;
+}
+
+function formatDurationSeconds(seconds: number) {
+  return formatDuration(seconds * 1000);
+}
+
+function periodLabel(period: LocalProxyStatisticsPeriod) {
+  switch (period) {
+    case '7d':
+      return 'Last 7 days';
+    case '30d':
+      return 'Last 30 days';
+    default:
+      return 'Last 24 hours';
+  }
+}
+
+function requestTargetLabel(host?: string | null, port?: number | null) {
+  if (!host) {
+    return 'Unknown host';
+  }
+
+  return port ? `${host}:${port}` : host;
+}
+
+function requestOutcomeBadge(outcome: string) {
+  switch (outcome.toLowerCase()) {
+    case 'forwarded':
+      return 'success';
+    case 'wakepending':
+      return 'warning';
+    case 'failed':
+      return 'error';
+    default:
+      return badgeClass(outcome);
+  }
 }
 
 function formatQuotaValue(value: number, unit: string) {

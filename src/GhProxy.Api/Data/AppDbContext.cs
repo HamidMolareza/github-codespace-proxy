@@ -11,8 +11,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<OperationalEvent> OperationalEvents => Set<OperationalEvent>();
     public DbSet<GitHubAccount> GitHubAccounts => Set<GitHubAccount>();
     public DbSet<CodespaceSnapshot> CodespaceSnapshots => Set<CodespaceSnapshot>();
+    public DbSet<CodespaceStateSample> CodespaceStateSamples => Set<CodespaceStateSample>();
     public DbSet<LocalProxyProfile> LocalProxyProfiles => Set<LocalProxyProfile>();
     public DbSet<LocalProxySession> LocalProxySessions => Set<LocalProxySession>();
+    public DbSet<LocalProxyGatewayRequest> LocalProxyGatewayRequests => Set<LocalProxyGatewayRequest>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -97,6 +99,24 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<CodespaceStateSample>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CodespaceName).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.State).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.Source).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.ObservedAt)
+                .HasConversion(
+                    value => value.UtcTicks,
+                    value => new DateTimeOffset(value, TimeSpan.Zero));
+            entity.HasIndex(x => x.ObservedAt);
+            entity.HasIndex(x => new { x.AccountId, x.CodespaceName, x.ObservedAt });
+            entity.HasOne(x => x.Account)
+                .WithMany()
+                .HasForeignKey(x => x.AccountId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<LocalProxyProfile>(entity =>
         {
             entity.HasKey(x => x.Id);
@@ -122,6 +142,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(x => x.ProfileId);
             entity.HasIndex(x => x.StartedAt);
+        });
+
+        modelBuilder.Entity<LocalProxyGatewayRequest>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Protocol).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.TargetHost).HasMaxLength(255);
+            entity.Property(x => x.Outcome).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.CodespaceName).HasMaxLength(200);
+            entity.Property(x => x.ErrorMessage).HasMaxLength(1000);
+            entity.HasIndex(x => x.ObservedAt);
+            entity.HasIndex(x => x.SessionId);
         });
     }
 }

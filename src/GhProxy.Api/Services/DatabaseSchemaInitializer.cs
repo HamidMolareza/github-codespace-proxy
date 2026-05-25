@@ -89,6 +89,25 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
             cancellationToken);
         await db.Database.ExecuteSqlRawAsync(
             """
+            CREATE TABLE IF NOT EXISTS "CodespaceStateSamples" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_CodespaceStateSamples" PRIMARY KEY,
+                "AccountId" TEXT NOT NULL,
+                "CodespaceName" TEXT NOT NULL,
+                "State" TEXT NOT NULL,
+                "ObservedAt" INTEGER NOT NULL,
+                "Source" TEXT NOT NULL,
+                CONSTRAINT "FK_CodespaceStateSamples_GitHubAccounts_AccountId" FOREIGN KEY ("AccountId") REFERENCES "GitHubAccounts" ("Id") ON DELETE CASCADE
+            );
+            """,
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_CodespaceStateSamples_ObservedAt" ON "CodespaceStateSamples" ("ObservedAt");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_CodespaceStateSamples_AccountId_CodespaceName_ObservedAt" ON "CodespaceStateSamples" ("AccountId", "CodespaceName", "ObservedAt");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """
             CREATE TABLE IF NOT EXISTS "LocalProxyProfiles" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_LocalProxyProfiles" PRIMARY KEY,
                 "Name" TEXT NOT NULL,
@@ -138,6 +157,29 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
             cancellationToken);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_LocalProxySessions_StartedAt" ON "LocalProxySessions" ("StartedAt");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS "LocalProxyGatewayRequests" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_LocalProxyGatewayRequests" PRIMARY KEY,
+                "ObservedAt" TEXT NOT NULL,
+                "Protocol" TEXT NOT NULL,
+                "TargetHost" TEXT NULL,
+                "TargetPort" INTEGER NULL,
+                "Outcome" TEXT NOT NULL,
+                "SessionId" TEXT NULL,
+                "AccountId" TEXT NULL,
+                "CodespaceName" TEXT NULL,
+                "ErrorMessage" TEXT NULL,
+                "DurationMs" INTEGER NULL
+            );
+            """,
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_LocalProxyGatewayRequests_ObservedAt" ON "LocalProxyGatewayRequests" ("ObservedAt");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_LocalProxyGatewayRequests_SessionId" ON "LocalProxyGatewayRequests" ("SessionId");""",
             cancellationToken);
         await db.Database.ExecuteSqlRawAsync(
             """

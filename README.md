@@ -15,13 +15,15 @@ The application stores GitHub username/PAT records with ASP.NET Core Data Protec
 - Block create/start when an account is marked `Limited`.
 - Keep one local mixed proxy port bound, with HTTP and SOCKS5 both available on `127.0.0.1:8910`.
 - On first proxy traffic, automatically select the configured account with the lowest Codespaces usage, ensure the `wproxy97/proxy2` fork and Codespace exist, stop extra running Codespaces, and start the tunnel-backed Xray proxy.
-- Keep a lightweight wake gateway bound while the backend is idle, down, retrying, or starting. Requests are rejected until the Codespace/Xray backend is ready.
+- Keep a lightweight wake gateway bound while the backend is idle, down, retrying, or starting. After idle auto-stop, the gateway waits for repeated wake traffic before spending Codespaces minutes again.
 - Show clear proxy availability: `Up`, `Starting`, `Retrying`, `Idle`, or `Down`, with retry countdowns, latest request time, idle time, and idle shutdown time.
+- Show Codespace proxy activity statistics for the last 24 hours, 7 days, or 30 days so idle-stop behavior can be audited.
+- Show persisted latest user proxy requests in the Codespace Proxy tab with protocol, host, outcome, and Codespace context only.
 - Retry Codespace proxy startup automatically after startup, tunnel, probe, or restart failures; allow manual retry from the Codespace Proxy tab.
 - Remember the selected UI tab in the URL and allow `System`, `Light`, and `Dark` themes.
 - Inspect operational activity, diagnostics, and correlation IDs.
 
-The app reproduces the stable `sp-proxy` shape with native `gh`: it starts/resumes the selected Codespace, opens `gh codespace ports forward` from remote `127.0.0.1:8899` to a hidden local tunnel port, and routes Xray through that tunnel. Limited accounts are skipped, and idle shutdown stops the backing Codespace to reduce Codespaces usage.
+The app reproduces the stable `sp-proxy` shape with native `gh`: it starts/resumes the selected Codespace, opens a tunnel from remote `127.0.0.1:8899` to a hidden local tunnel port, and routes Xray through that tunnel. The default tunnel mode is `gh codespace ports forward`; VPS deployments can switch to `LocalProxy__CodespaceTunnelMode=native-ssh` to generate an OpenSSH config with `gh codespace ssh --config` and run a plain `ssh -N -L` tunnel. Limited accounts are skipped, and idle shutdown stops the backing Codespace to reduce Codespaces usage. By default, a stopped idle proxy requires 5 proxy requests within 60 seconds before automatic wake; manual Retry starts immediately.
 
 ## Run Locally
 
@@ -55,7 +57,7 @@ Host-network endpoints:
 - Backend API: `127.0.0.1:5080`
 - Codespace proxy: `127.0.0.1:8910` for both HTTP and SOCKS5
 
-Compose uses Linux host networking so `gh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, sets `TZ=Asia/Tehran`, and sets `HOME=/app/data/home`. The gateway binds `127.0.0.1:8910` immediately; the first HTTP or SOCKS request starts the best available Codespace backend. Startup uses `gh codespace ports forward 8899:<hidden-port> -c <codespace>` by default, matching the working `sp-proxy` flow. Optional remote proxy verification/startup can be enabled with `LocalProxy__CodespaceEnsureRemoteProxy=true`.
+Compose uses Linux host networking so `gh` follows the host VPN route. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, sets `TZ=Asia/Tehran`, and sets `HOME=/app/data/home`. The gateway binds `127.0.0.1:8910` immediately; the first HTTP or SOCKS request starts the best available Codespace backend. Startup uses `gh codespace ports forward 8899:<hidden-port> -c <codespace>` by default, matching the working `sp-proxy` flow. Set `LocalProxy__CodespaceTunnelMode=native-ssh` to use `gh codespace ssh --config` plus native OpenSSH forwarding instead. Optional remote proxy verification/startup can be enabled with `LocalProxy__CodespaceEnsureRemoteProxy=true`.
 
 Check the stack:
 
@@ -95,6 +97,8 @@ The API writes structured operational events to SQLite and, by default, JSONL fi
 - `GET /api/diagnostics/runtime`
 
 Every API response includes `X-Correlation-ID`. Incoming correlation IDs are preserved when the client sends that header. GitHub API paths/statuses, Codespace tunnel events, Xray proxy events, failures, and bounded snippets are recorded with secret redaction.
+
+The Statistics tab reads `GET /api/local-proxy/statistics?period=24h`, `7d`, or `30d`. It uses app-managed local proxy sessions as the source of truth for active/off time, marks failed startup/runtime retry windows as red error time, and records GitHub Codespace state samples during existing sync and lifecycle operations. If GitHub reports a Codespace active while the app-managed proxy is not active, the tab highlights that mismatch.
 
 ## Codespace Proxy Status And Retry
 

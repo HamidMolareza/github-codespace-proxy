@@ -38,10 +38,12 @@ The app uses Codespaces as the proxy backend only for accounts you add and autho
 3. Keep `Bind host` as `127.0.0.1` for direct local runs.
 4. Keep `Proxy port` as `8910` unless that port is already in use.
 5. Set username/password only if you want proxy authentication.
-6. Send traffic to the proxy port. The backend selects the lowest-usage account, ensures the `wproxy97/proxy2` fork and Codespace exist, starts/resumes the Codespace, opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`, starts Xray through that hidden tunnel, and serves the waiting request.
+6. Send traffic to the proxy port. The backend selects the lowest-usage account, ensures the `wproxy97/proxy2` fork and Codespace exist, starts/resumes the Codespace, opens the configured Codespace tunnel to `8899:<hidden-port>`, starts Xray through that hidden tunnel, and serves the waiting request.
 7. Watch the Codespace Proxy panel and Activity tab for selected account, selected Codespace, tunnel, Xray, probe, retry, reconnect, and idle-stop events.
 
 The Automation Status card distinguishes `Up`, `Starting`, `Retrying`, `Idle`, and `Down`. It also shows the latest request time, idle duration, idle-stop countdown, retry countdown, selected account, and selected Codespace when available.
+
+The Latest Requests card shows recent user traffic entering the Codespace proxy gateway. It is persisted in SQLite, records only protocol, host, port, outcome, duration, and session/Codespace context, and intentionally does not store URL paths, query strings, headers, bodies, credentials, or internal API/dashboard/probe requests.
 
 Manual retry:
 
@@ -119,9 +121,11 @@ docker compose down -v
 
 ## Idle Auto-Stop And Recovery
 
-`LocalProxyIdleShutdownService` stops the active local Xray proxy and the backing Codespace when there are no observed Xray access-log requests for the profile idle window. The gateway remains bound, so the next proxy request starts a fresh backend automatically.
+`LocalProxyIdleShutdownService` stops the active local Xray proxy and the backing Codespace when there is no user traffic through the public proxy gateway for the profile idle window. Internal API calls, dashboard polling, readiness probes, runtime diagnostics, GitHub sync/billing calls, and Xray access-log writes do not extend the idle window. The gateway remains bound, but after an idle auto-stop it holds automatic wake until repeated proxy traffic proves real demand.
 
 The default idle window is stored per profile and defaults to 30 minutes.
+
+By default, automatic wake requires 5 user proxy requests within 60 seconds after idle stop. Tune this with `LocalProxy__IdleWakeRequestThreshold` and `LocalProxy__IdleWakeWindowSeconds`; set the threshold to `1` to restore single-request wake behavior. Manual Retry in the Codespace Proxy tab bypasses the threshold.
 
 If the app restarts while an in-memory Codespace-backed proxy session is active, startup recovery attempts to restart the last saved Codespace session. If GitHub, internet, tunnel, or local probe failures occur, the backend schedules exponential retries and reports `Retrying` plus the countdown in `/api/local-proxy/status`.
 
@@ -129,6 +133,18 @@ Status check:
 
 ```bash
 curl http://127.0.0.1:5080/api/local-proxy/status
+```
+
+## Codespace Proxy Statistics
+
+Use the Statistics tab to confirm when the app-managed Codespace proxy was active, off, or failing to connect. The tab supports last 24 hours, 7 days, and 30 days. The 24-hour view is hourly; the longer views are daily.
+
+The backend calculates active time from non-error `LocalProxySessions`, which are the app-managed Xray/tunnel sessions. Failed startup/runtime events are shown as error time from the first failure until the next successful `local_proxy.xray.started`, stop, or idle-stop event. The chart uses a gray default track, green for active time, red for error/retry downtime, and black for idle/off time. It also stores GitHub Codespace state samples during normal sync and lifecycle calls. The app does not add high-frequency GitHub polling for statistics. If GitHub reports a Codespace active while the app-managed proxy is inactive, the Statistics tab shows a warning so you can inspect that period in Activity or GitHub.
+
+API check:
+
+```bash
+curl 'http://127.0.0.1:5080/api/local-proxy/statistics?period=24h'
 ```
 
 ## Observability
@@ -154,9 +170,9 @@ Use the Activity tab Clear button, or call `DELETE /api/activity`, to delete per
 
 ## GitHub Codespaces
 
-The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The automatic proxy startup then uses `gh codespace ports forward` to reproduce the stable `sp-proxy` tunnel shape: remote `127.0.0.1:8899` to a hidden local tunnel port, then Xray behind the public gateway port.
+The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The automatic proxy startup then opens a Codespace tunnel from remote `127.0.0.1:8899` to a hidden local tunnel port, then runs Xray behind the public gateway port.
 
-During startup, the backend verifies `gh codespace ssh -c <codespace> true`, then opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`. Remote proxy verification/startup is skipped by default because the working manual `sp-proxy` flow expects the Codespace proxy to already listen on `8899`; set `LocalProxy__CodespaceEnsureRemoteProxy=true` to ask the app to run the configured `proxy` command inside the Codespace first. If the tunnel exits unexpectedly, the panel reports `Retrying` or `Down`, and the next proxy request or manual Retry triggers startup again. If the idle window is reached, the panel reports `Idle`/`ZzzIdle` and the backing Codespace is stopped to save usage.
+By default, startup verifies `gh codespace ssh -c <codespace> true`, then opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`. Set `LocalProxy__CodespaceTunnelMode=native-ssh` to generate an OpenSSH config with `gh codespace ssh --config` and run `ssh -N -L 127.0.0.1:<hidden-port>:127.0.0.1:8899` instead. Set `LocalProxy__CodespaceRequireSshReady=false` when the separate readiness command is unreliable but forwarding itself works. Remote proxy verification/startup is skipped by default because the working manual `sp-proxy` flow expects the Codespace proxy to already listen on `8899`; set `LocalProxy__CodespaceEnsureRemoteProxy=true` to ask the app to run the configured `proxy` command inside the Codespace first. If the tunnel exits unexpectedly, the panel reports `Retrying` or `Down`, and the next proxy request or manual Retry triggers startup again. If the idle window is reached, the panel reports `Idle`/`ZzzIdle`; automatic wake is thresholded and the backing Codespace is stopped to save usage.
 
 ## UI Preferences
 

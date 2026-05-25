@@ -103,12 +103,99 @@ export interface LocalProxyAutomationStatus {
   publicPortOpen: boolean;
   retryInSeconds?: number | null;
   lastRequestAt?: string | null;
+  idleWakePaused: boolean;
+  idleWakeRequestCount: number;
+  idleWakeRequestThreshold: number;
+  idleWakeWindowExpiresAt?: string | null;
+  latestRequests: LocalProxyGatewayRequest[];
+}
+
+export interface LocalProxyGatewayRequest {
+  id: string;
+  observedAt: string;
+  protocol: string;
+  targetHost?: string | null;
+  targetPort?: number | null;
+  outcome: string;
+  sessionId?: string | null;
+  accountId?: string | null;
+  codespaceName?: string | null;
+  errorMessage?: string | null;
+  durationMs?: number | null;
 }
 
 export interface LocalProxyResult {
   succeeded: boolean;
   message: string;
   session?: LocalProxySession | null;
+}
+
+export type LocalProxyStatisticsPeriod = '24h' | '7d' | '30d';
+
+export interface LocalProxyStatistics {
+  period: LocalProxyStatisticsPeriod;
+  rangeStart: string;
+  rangeEnd: string;
+  timeZone: string;
+  totals: LocalProxyStatisticsTotals;
+  hourlyBuckets: LocalProxyStatisticsBucket[];
+  dailyBuckets: LocalProxyStatisticsBucket[];
+  sessions: LocalProxyStatisticsSession[];
+  gitHubSamples: CodespaceStateSample[];
+  mismatches: LocalProxyStatisticsMismatch[];
+}
+
+export interface LocalProxyStatisticsTotals {
+  activeSeconds: number;
+  offSeconds: number;
+  errorSeconds: number;
+  activePercent: number;
+  errorPercent: number;
+  sessionCount: number;
+  averageActiveSecondsPerDay: number;
+}
+
+export interface LocalProxyStatisticsBucket {
+  start: string;
+  end: string;
+  label: string;
+  activeSeconds: number;
+  offSeconds: number;
+  errorSeconds: number;
+  activePercent: number;
+  errorPercent: number;
+  sessionCount: number;
+}
+
+export interface LocalProxyStatisticsSession {
+  sessionId: string;
+  accountId?: string | null;
+  accountUsername?: string | null;
+  codespaceName?: string | null;
+  startedAt: string;
+  endedAt: string;
+  activeSeconds: number;
+  status: string;
+  lastError?: string | null;
+}
+
+export interface CodespaceStateSample {
+  accountId: string;
+  accountUsername?: string | null;
+  codespaceName: string;
+  state: string;
+  observedAt: string;
+  source: string;
+  isActive: boolean;
+}
+
+export interface LocalProxyStatisticsMismatch {
+  observedAt: string;
+  accountId: string;
+  accountUsername?: string | null;
+  codespaceName: string;
+  gitHubState: string;
+  message: string;
 }
 
 export interface CodespaceSnapshot {

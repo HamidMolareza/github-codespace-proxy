@@ -33,7 +33,25 @@ public sealed record LocalProxyAutomationStatusResponse(
     string Severity,
     bool PublicPortOpen,
     int? RetryInSeconds,
-    DateTimeOffset? LastRequestAt);
+    DateTimeOffset? LastRequestAt,
+    bool IdleWakePaused,
+    int IdleWakeRequestCount,
+    int IdleWakeRequestThreshold,
+    DateTimeOffset? IdleWakeWindowExpiresAt,
+    IReadOnlyList<LocalProxyGatewayRequestResponse> LatestRequests);
+
+public sealed record LocalProxyGatewayRequestResponse(
+    Guid Id,
+    DateTimeOffset ObservedAt,
+    string Protocol,
+    string? TargetHost,
+    int? TargetPort,
+    string Outcome,
+    Guid? SessionId,
+    Guid? AccountId,
+    string? CodespaceName,
+    string? ErrorMessage,
+    long? DurationMs);
 
 public sealed record LocalProxyProfileResponse(
     Guid Id,

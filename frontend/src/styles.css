@@ -191,6 +191,12 @@ button[type="submit"],
   color: #9a3028;
 }
 
+.notice.warning {
+  border-color: #efd18c;
+  background: #fff8e5;
+  color: #8a5a0a;
+}
+
 .quota-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -466,6 +472,34 @@ select:focus {
   background: #f5faff;
 }
 
+.proxy-requests-card {
+  gap: 12px;
+}
+
+.proxy-request-list {
+  display: grid;
+  gap: 8px;
+}
+
+.proxy-request-row {
+  display: grid;
+  grid-template-columns: minmax(135px, 1fr) 70px minmax(120px, 1.1fr) 96px minmax(100px, 0.8fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #e6ecf4;
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+
+.proxy-request-row span,
+.proxy-request-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .node-meta {
   display: flex;
   flex-wrap: wrap;
@@ -557,10 +591,10 @@ select:focus {
 
 .codespace-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 1fr) 96px minmax(140px, 0.8fr) 120px 190px;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 1fr) 96px minmax(140px, 0.8fr) minmax(90px, 0.5fr) 120px 190px;
   gap: 10px;
   align-items: center;
-  min-width: 980px;
+  min-width: 1080px;
   min-height: 52px;
   padding: 8px 12px;
   border-bottom: 1px solid #e6ecf4;
@@ -725,6 +759,138 @@ select:focus {
 
 .activity-summary.compact {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.stats-summary {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.segmented-control {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.segmented-control button {
+  min-width: 118px;
+}
+
+.stats-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d8e1ef;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #667085;
+}
+
+.stats-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stats-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #edf2f7;
+}
+
+.stats-swatch.active {
+  background: #377d71;
+}
+
+.stats-swatch.error {
+  background: #c2413d;
+}
+
+.stats-swatch.off {
+  background: #050505;
+}
+
+.stats-chart {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #d8e1ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.stats-bar-row {
+  display: grid;
+  grid-template-columns: 76px minmax(160px, 1fr) 96px 96px 92px;
+  gap: 10px;
+  align-items: center;
+  min-height: 34px;
+}
+
+.stats-bar-row span,
+.stats-bar-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats-bar {
+  display: flex;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #edf2f7;
+}
+
+.stats-bar-active,
+.stats-bar-error,
+.stats-bar-off {
+  height: 100%;
+  flex: 0 0 auto;
+}
+
+.stats-bar-active {
+  background: #377d71;
+}
+
+.stats-bar-error {
+  background: #c2413d;
+}
+
+.stats-bar-off {
+  background: #050505;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.stats-session-list {
+  display: grid;
+  gap: 8px;
+}
+
+.stats-session-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(120px, 1fr) minmax(80px, 0.6fr) minmax(80px, 0.6fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #e6ecf4;
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+
+.stats-session-row span,
+.stats-session-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .activity-filters .section-title {
@@ -896,6 +1062,8 @@ html[data-theme="dark"] .diagnostic-strip,
 html[data-theme="dark"] .activity-filters,
 html[data-theme="dark"] .event-table,
 html[data-theme="dark"] .event-detail-panel,
+html[data-theme="dark"] .stats-chart,
+html[data-theme="dark"] .stats-range,
 html[data-theme="dark"] .theme-switch {
   border-color: #49443d;
   background: #211f1c;
@@ -906,7 +1074,9 @@ html[data-theme="dark"] .node-card,
 html[data-theme="dark"] .account-row,
 html[data-theme="dark"] .diagnostic-item,
 html[data-theme="dark"] .codespace-row,
-html[data-theme="dark"] .event-row {
+html[data-theme="dark"] .event-row,
+html[data-theme="dark"] .stats-session-row,
+html[data-theme="dark"] .proxy-request-row {
   border-color: #49443d;
   background: #25231f;
   color: #eee8dd;
@@ -962,6 +1132,44 @@ html[data-theme="dark"] .notice.error {
   border-color: #7d403a;
   background: #321f1d;
   color: #f0a49d;
+}
+
+html[data-theme="dark"] .notice.warning {
+  border-color: #745f2c;
+  background: #332913;
+  color: #e7c979;
+}
+
+html[data-theme="dark"] .stats-range {
+  color: #aaa397;
+}
+
+html[data-theme="dark"] .stats-bar {
+  background: #343029;
+}
+
+html[data-theme="dark"] .stats-bar-active {
+  background: #6aa99f;
+}
+
+html[data-theme="dark"] .stats-bar-error {
+  background: #e06b66;
+}
+
+html[data-theme="dark"] .stats-bar-off {
+  background: #050505;
+}
+
+html[data-theme="dark"] .stats-swatch.active {
+  background: #6aa99f;
+}
+
+html[data-theme="dark"] .stats-swatch.error {
+  background: #e06b66;
+}
+
+html[data-theme="dark"] .stats-swatch.off {
+  background: #050505;
 }
 
 html[data-theme="dark"] .badge.ready,
@@ -1065,8 +1273,13 @@ html[data-theme="dark"] .event-detail {
   .activity-summary,
   .activity-filters,
   .quota-summary,
+  .stats-grid,
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .stats-bar-row {
+    grid-template-columns: 64px minmax(120px, 1fr) 78px 78px 74px;
   }
 
   .account-row {
@@ -1104,6 +1317,31 @@ html[data-theme="dark"] .event-detail {
 
   .theme-switch button {
     flex: 1;
+  }
+
+  .segmented-control {
+    width: 100%;
+  }
+
+  .segmented-control button {
+    flex: 1 1 130px;
+  }
+
+  .stats-bar-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .proxy-request-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .stats-bar-row span,
+  .stats-bar-row strong,
+  .proxy-request-row span,
+  .proxy-request-row strong {
+    white-space: normal;
   }
 
   .active-actions,

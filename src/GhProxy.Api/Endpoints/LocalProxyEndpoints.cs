@@ -8,6 +8,8 @@ namespace GhProxy.Api.Endpoints;
 
 public static class LocalProxyEndpoints
 {
+    internal const int LatestGatewayRequestLimit = 20;
+
     public static IEndpointRouteBuilder MapLocalProxyEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/local-proxy");
@@ -91,7 +93,8 @@ public static class LocalProxyEndpoints
             int? retryInSeconds = runtimeStatus.NextRetryAt is null
                 ? null
                 : Math.Max(0, (int)Math.Ceiling((runtimeStatus.NextRetryAt.Value - clock.UtcNow).TotalSeconds));
-            var lastRequestAt = runtimeStatus.LastRequestAt ?? activeSession?.LastRequestAt ?? latestSession?.LastRequestAt;
+            var lastRequestAt = GetLatestRequestAt(runtimeStatus.LastRequestAt, activeSession?.LastRequestAt, latestSession?.LastRequestAt);
+            var latestRequests = ToLatestRequestResponses(await db.LocalProxyGatewayRequests.AsNoTracking().ToListAsync(ct));
 
             return Results.Ok(new LocalProxyAutomationStatusResponse(
                 ToResponse(settings),
@@ -107,7 +110,12 @@ public static class LocalProxyEndpoints
                 statusSummary.Severity,
                 statusSummary.PublicPortOpen,
                 retryInSeconds,
-                lastRequestAt));
+                lastRequestAt,
+                runtimeStatus.IdleWakePaused,
+                runtimeStatus.IdleWakeRequestCount,
+                runtimeStatus.IdleWakeRequestThreshold,
+                runtimeStatus.IdleWakeWindowExpiresAt,
+                latestRequests));
         });
 
         group.MapPost("/profiles", async (LocalProxyProfileRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
@@ -222,6 +230,9 @@ public static class LocalProxyEndpoints
             return session is null ? Results.Text("null", "application/json") : Results.Ok(session);
         });
 
+        group.MapGet("/statistics", async (string? period, LocalProxyStatisticsService statistics, CancellationToken ct) =>
+            Results.Ok(await statistics.GetAsync(period, ct)));
+
         group.MapPost("/profiles/{id:guid}/start", async (Guid id, LocalProxyRuntimeService runtime, CancellationToken ct) =>
         {
             var result = await runtime.StartAsync(id, ct);
@@ -332,6 +343,40 @@ public static class LocalProxyEndpoints
             null);
     }
 
+    internal static DateTimeOffset? GetLatestRequestAt(params DateTimeOffset?[] timestamps)
+    {
+        DateTimeOffset? latest = null;
+        foreach (var timestamp in timestamps)
+        {
+            if (timestamp is not null && (latest is null || timestamp > latest))
+            {
+                latest = timestamp;
+            }
+        }
+
+        return latest;
+    }
+
+    internal static IReadOnlyList<LocalProxyGatewayRequestResponse> ToLatestRequestResponses(
+        IEnumerable<LocalProxyGatewayRequest> requests,
+        int limit = LatestGatewayRequestLimit) =>
+        requests
+            .OrderByDescending(x => x.ObservedAt)
+            .Take(Math.Max(0, limit))
+            .Select(x => new LocalProxyGatewayRequestResponse(
+                x.Id,
+                x.ObservedAt,
+                x.Protocol,
+                x.TargetHost,
+                x.TargetPort,
+                x.Outcome,
+                x.SessionId,
+                x.AccountId,
+                x.CodespaceName,
+                x.ErrorMessage,
+                x.DurationMs))
+            .ToList();
+
     private static LocalProxyStatusSummary BuildStatusSummary(
         string phase,
         LocalProxyRuntimeState? activeSession,
@@ -372,6 +417,16 @@ public static class LocalProxyEndpoints
             string.Equals(normalizedPhase, "Stopped", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(normalizedPhase, "WaitingForTraffic", StringComparison.OrdinalIgnoreCase))
         {
+            if (runtimeStatus.IdleWakePaused && runtimeStatus.IdleWakeRequestThreshold > 1)
+            {
+                var remaining = Math.Max(0, runtimeStatus.IdleWakeRequestThreshold - runtimeStatus.IdleWakeRequestCount);
+                return new LocalProxyStatusSummary(
+                    "Idle",
+                    $"Proxy is idle-paused. {remaining} more proxy request(s) within the wake window will start the Codespace.",
+                    "muted",
+                    PublicPortOpen: true);
+            }
+
             return new LocalProxyStatusSummary(
                 "Idle",
                 "Proxy is idle. The wake gateway is listening and incoming proxy traffic will start the Codespace.",

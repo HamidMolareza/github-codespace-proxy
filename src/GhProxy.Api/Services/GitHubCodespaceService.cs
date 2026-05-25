@@ -70,6 +70,7 @@ public sealed class GitHubCodespaceService(
             }
 
             ApplyRemote(snapshot, remote, now);
+            AddStateSample(account.Id, remote.Name, remote.State, now, "sync");
         }
 
         foreach (var stale in existing.Where(x => !remoteNames.Contains(x.Name)).ToList())
@@ -80,6 +81,7 @@ public sealed class GitHubCodespaceService(
         account.LastSyncedAt = now;
         account.LastError = null;
         account.UpdatedAt = now;
+        DeleteOldStateSamples(now);
         await db.SaveChangesAsync(cancellationToken);
         await audit.WriteAsync("github.codespaces.sync", $"Synced {remoteCodespaces.Count} Codespaces.", account.Id, cancellationToken);
 
@@ -237,12 +239,33 @@ public sealed class GitHubCodespaceService(
             db.CodespaceSnapshots.Add(snapshot);
         }
 
-        ApplyRemote(snapshot, remote, clock.UtcNow);
-        account.LastSyncedAt = clock.UtcNow;
+        var now = clock.UtcNow;
+        ApplyRemote(snapshot, remote, now);
+        AddStateSample(account.Id, remote.Name, remote.State, now, "lifecycle");
+        DeleteOldStateSamples(now);
+        account.LastSyncedAt = now;
         account.LastError = null;
-        account.UpdatedAt = clock.UtcNow;
+        account.UpdatedAt = now;
         await db.SaveChangesAsync(cancellationToken);
         return snapshot;
+    }
+
+    private void AddStateSample(Guid accountId, string codespaceName, string state, DateTimeOffset observedAt, string source)
+    {
+        db.CodespaceStateSamples.Add(new CodespaceStateSample
+        {
+            AccountId = accountId,
+            CodespaceName = codespaceName,
+            State = state,
+            ObservedAt = observedAt,
+            Source = source
+        });
+    }
+
+    private void DeleteOldStateSamples(DateTimeOffset now)
+    {
+        var cutoff = now.AddDays(-90);
+        db.CodespaceStateSamples.RemoveRange(db.CodespaceStateSamples.Where(x => x.ObservedAt < cutoff));
     }
 
     private async Task<GitHubAccount> GetAccountAsync(Guid accountId, CancellationToken cancellationToken) =>

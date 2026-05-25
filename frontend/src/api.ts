@@ -11,6 +11,8 @@ import type {
   LocalProxyProfile,
   LocalProxyProfileForm,
   LocalProxyAutomationStatus,
+  LocalProxyStatistics,
+  LocalProxyStatisticsPeriod,
   LocalProxyResult,
   LocalProxySettingsForm,
   LocalProxySession,
@@ -68,6 +70,8 @@ export const api = {
       method: 'DELETE'
     }),
   localProxySession: () => request<LocalProxySession | null>('/api/local-proxy/session'),
+  localProxyStatistics: (period: LocalProxyStatisticsPeriod) =>
+    request<LocalProxyStatistics>(`/api/local-proxy/statistics?period=${encodeURIComponent(period)}`),
   startLocalProxy: (profileId: string) =>
     request<LocalProxyResult>(`/api/local-proxy/profiles/${profileId}/start`, {
       method: 'POST'
