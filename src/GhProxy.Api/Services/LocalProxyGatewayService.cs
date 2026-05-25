@@ -298,7 +298,7 @@ public sealed class LocalProxyGatewayService(
 
         request.ErrorMessage = Truncate(errorMessage, 1000);
         request.DurationMs = durationMs;
-        await db.SaveChangesAsync(cancellationToken);
+        await SaveBestEffortRequestHistoryAsync(db, cancellationToken);
     }
 
     internal static async Task TrimRequestHistoryAsync(AppDbContext db, int retentionLimit, CancellationToken cancellationToken)
@@ -317,7 +317,19 @@ public sealed class LocalProxyGatewayService(
             .Where(x => idsToDelete.Contains(x.Id))
             .ToListAsync(cancellationToken);
         db.LocalProxyGatewayRequests.RemoveRange(oldRequests);
-        await db.SaveChangesAsync(cancellationToken);
+        await SaveBestEffortRequestHistoryAsync(db, cancellationToken);
+    }
+
+    internal static async Task SaveBestEffortRequestHistoryAsync(AppDbContext db, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Request history is best-effort; retention may delete a row before a late relay update.
+        }
     }
 
     private async Task<GatewaySettings> LoadSettingsAsync(CancellationToken cancellationToken)

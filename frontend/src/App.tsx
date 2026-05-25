@@ -1087,9 +1087,9 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
   return (
     <section className="activity-panel">
       <div className="activity-summary stats-summary">
-        <StatusTile icon={<Wifi size={20} />} label="Active" value={statistics ? formatDurationSeconds(statistics.totals.activeSeconds) : 'Loading'} />
-        <StatusTile icon={<CircleStop size={20} />} label="Off" value={statistics ? formatDurationSeconds(statistics.totals.offSeconds) : 'Loading'} />
-        <StatusTile icon={<AlertTriangle size={20} />} label="Error" value={statistics ? formatDurationSeconds(statistics.totals.errorSeconds) : 'Loading'} />
+        <StatusTile icon={<Wifi size={20} />} label="Active" tone="success" value={statistics ? formatDurationSeconds(statistics.totals.activeSeconds) : 'Loading'} />
+        <StatusTile icon={<CircleStop size={20} />} label="Off" tone="idle" value={statistics ? formatDurationSeconds(statistics.totals.offSeconds) : 'Loading'} />
+        <StatusTile icon={<AlertTriangle size={20} />} label="Error" tone="error" value={statistics ? formatDurationSeconds(statistics.totals.errorSeconds) : 'Loading'} />
         <StatusTile icon={<BarChart3 size={20} />} label="Active percent" value={statistics ? `${statistics.totals.activePercent}%` : 'Loading'} />
         <StatusTile icon={<Activity size={20} />} label="Sessions" value={statistics ? String(statistics.totals.sessionCount) : 'Loading'} />
       </div>
@@ -1131,7 +1131,7 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
             <i className="stats-swatch error" /> Error
           </span>
           <span className="stats-legend-item">
-            <i className="stats-swatch off" /> Idle/off
+            <i className="stats-swatch off" /> Default/off
           </span>
         </section>
       )}
@@ -1145,7 +1145,6 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
           buckets.map((bucket) => {
             const activePercent = Math.max(0, Math.min(100, bucket.activePercent));
             const errorPercent = Math.max(0, Math.min(100 - activePercent, bucket.errorPercent));
-            const offPercent = Math.max(0, Math.min(100 - activePercent - errorPercent, 100));
             return (
               <div className="stats-bar-row" key={`${bucket.start}-${bucket.end}`}>
                 <span>{bucket.label}</span>
@@ -1155,7 +1154,6 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
                 >
                   <div className="stats-bar-active" style={{ width: `${activePercent}%` }} />
                   <div className="stats-bar-error" style={{ width: `${errorPercent}%` }} />
-                  <div className="stats-bar-off" style={{ width: `${offPercent}%` }} />
                 </div>
                 <strong>{formatDurationSeconds(bucket.activeSeconds)}</strong>
                 <span>{formatDurationSeconds(bucket.errorSeconds)}</span>
@@ -1184,8 +1182,14 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
               <div className="empty-state">No app-managed proxy sessions in this period.</div>
             ) : (
               <div className="stats-session-list">
+                <div className="stats-session-row stats-session-header">
+                  <span>Started</span>
+                  <span>Codespace</span>
+                  <strong>Duration</strong>
+                  <span>Status</span>
+                </div>
                 {statistics.sessions.slice(0, 12).map((session) => (
-                  <div className="stats-session-row" key={session.sessionId}>
+                  <div className="stats-session-row" key={session.sessionId} title={session.lastError ?? undefined}>
                     <span>{formatDateTime(session.startedAt)}</span>
                     <span>{session.codespaceName ?? 'Codespace'}</span>
                     <strong>{formatDurationSeconds(session.activeSeconds)}</strong>
@@ -1387,9 +1391,9 @@ function ActivityPanel({
   );
 }
 
-function StatusTile({ icon, label, value }: { icon?: ReactNode; label: string; value: string }) {
+function StatusTile({ icon, label, tone, value }: { icon?: ReactNode; label: string; tone?: 'success' | 'idle' | 'error'; value: string }) {
   return (
-    <div className="status-tile">
+    <div className={`status-tile${tone ? ` status-tile-${tone}` : ''}`}>
       {icon}
       <div>
         <span>{label}</span>

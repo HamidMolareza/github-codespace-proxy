@@ -57,6 +57,11 @@ public sealed class LocalProxyRuntimeServiceTests
 
             Assert.False(result.Succeeded);
             Assert.Contains("Proxy port", result.Message, StringComparison.OrdinalIgnoreCase);
+            using var scope = provider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var session = await db.LocalProxySessions.SingleAsync();
+            Assert.Equal(LocalProxySessionStatus.Error, session.Status);
+            Assert.NotNull(session.StoppedAt);
         }
         finally
         {
@@ -80,6 +85,11 @@ public sealed class LocalProxyRuntimeServiceTests
 
             Assert.False(result.Succeeded);
             Assert.Contains("Failed to start proxy", result.Message, StringComparison.OrdinalIgnoreCase);
+            using var scope = provider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var session = await db.LocalProxySessions.SingleAsync();
+            Assert.Equal(LocalProxySessionStatus.Error, session.Status);
+            Assert.NotNull(session.StoppedAt);
         }
         finally
         {

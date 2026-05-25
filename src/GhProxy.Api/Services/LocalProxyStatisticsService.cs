@@ -105,9 +105,23 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
                 activeSeconds / (double)dayCount),
             normalizedPeriod == "24h" ? buckets : [],
             normalizedPeriod == "24h" ? [] : buckets,
-            sessions.Select(interval => interval.Session).ToList(),
+            sessions.OrderByDescending(interval => interval.Start).Select(interval => interval.Session).ToList(),
             samples,
             mismatches);
+    }
+
+    private static DateTimeOffset ResolveSessionEnd(LocalProxySession session, DateTimeOffset now)
+    {
+        if (session.StoppedAt is not null)
+        {
+            return session.StoppedAt.Value;
+        }
+
+        return session.Status switch
+        {
+            LocalProxySessionStatus.Starting or LocalProxySessionStatus.Running or LocalProxySessionStatus.Stopping => now,
+            _ => session.LastActivityAt > session.StartedAt ? session.LastActivityAt : session.StartedAt
+        };
     }
 
     private static ProxyInterval? ToInterval(
@@ -117,7 +131,7 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
         DateTimeOffset now,
         IReadOnlyDictionary<Guid, string> accountNames)
     {
-        var end = session.StoppedAt ?? now;
+        var end = ResolveSessionEnd(session, now);
         if (end <= rangeStart || session.StartedAt >= rangeEnd)
         {
             return null;

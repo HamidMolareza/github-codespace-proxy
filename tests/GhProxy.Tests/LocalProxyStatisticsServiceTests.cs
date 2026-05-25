@@ -186,6 +186,43 @@ public sealed class LocalProxyStatisticsServiceTests
         }
     }
 
+    [Fact]
+    public async Task GetAsync_DoesNotExtendLegacyTerminalSessionsWithoutStoppedAtToNow()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var now = new DateTimeOffset(2026, 5, 25, 8, 0, 0, TimeSpan.Zero);
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = await AddAccountAsync(db);
+            await AddSessionAsync(
+                db,
+                account.Id,
+                now.AddHours(-6),
+                null,
+                LocalProxySessionStatus.Error,
+                "legacy failed startup",
+                now.AddHours(-6).AddMinutes(5));
+            await AddSessionAsync(db, account.Id, now.AddHours(-2), now.AddHours(-1));
+            await AddSessionAsync(db, account.Id, now.AddMinutes(-30), null, LocalProxySessionStatus.Running);
+            await db.SaveChangesAsync();
+            var service = new LocalProxyStatisticsService(db, new TestClock(now));
+
+            var stats = await service.GetAsync("24h", CancellationToken.None);
+
+            Assert.Equal(5400, stats.Totals.ActiveSeconds);
+            Assert.Equal(300, stats.Totals.ErrorSeconds);
+            Assert.Equal(LocalProxySessionStatus.Running.ToString(), stats.Sessions[0].Status);
+            Assert.Equal(LocalProxySessionStatus.Stopped.ToString(), stats.Sessions[1].Status);
+            Assert.Equal(LocalProxySessionStatus.Error.ToString(), stats.Sessions[2].Status);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
     private static async Task<GitHubAccount> AddAccountAsync(AppDbContext db)
     {
         var account = new GitHubAccount
@@ -205,9 +242,10 @@ public sealed class LocalProxyStatisticsServiceTests
         AppDbContext db,
         Guid accountId,
         DateTimeOffset startedAt,
-        DateTimeOffset stoppedAt,
+        DateTimeOffset? stoppedAt,
         LocalProxySessionStatus status = LocalProxySessionStatus.Stopped,
-        string? lastError = null)
+        string? lastError = null,
+        DateTimeOffset? lastActivityAt = null)
     {
         var profile = await db.LocalProxyProfiles.FirstOrDefaultAsync();
         if (profile is null)
@@ -234,8 +272,8 @@ public sealed class LocalProxyStatisticsServiceTests
             LocalPort = profile.LocalPort,
             SocksPort = profile.SocksPort,
             StartedAt = startedAt,
-            LastActivityAt = stoppedAt,
-            LastRequestAt = stoppedAt,
+            LastActivityAt = lastActivityAt ?? stoppedAt ?? startedAt,
+            LastRequestAt = lastActivityAt ?? stoppedAt,
             StoppedAt = stoppedAt,
             LastError = lastError,
             AccountId = accountId,

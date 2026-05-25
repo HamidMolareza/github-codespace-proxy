@@ -92,6 +92,47 @@ public sealed class LocalProxyGatewayServiceTests
         }
     }
 
+    [Fact]
+    public async Task SaveBestEffortRequestHistoryAsync_IgnoresRowsDeletedByRetention()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            db.LocalProxyGatewayRequests.Add(new LocalProxyGatewayRequest
+            {
+                ObservedAt = new DateTimeOffset(2026, 5, 22, 6, 0, 0, TimeSpan.Zero),
+                Protocol = "SOCKS5",
+                Outcome = "Forwarded",
+                TargetHost = "github.com"
+            });
+            await db.SaveChangesAsync();
+            var tracked = await db.LocalProxyGatewayRequests.SingleAsync();
+
+            await using (var concurrent = CreateDb(databasePath))
+            {
+                var deleted = await concurrent.LocalProxyGatewayRequests.SingleAsync();
+                concurrent.LocalProxyGatewayRequests.Remove(deleted);
+                await concurrent.SaveChangesAsync();
+            }
+
+            tracked.DurationMs = 123;
+
+            await LocalProxyGatewayService.SaveBestEffortRequestHistoryAsync(db, CancellationToken.None);
+
+            await using var verify = CreateDb(databasePath);
+            Assert.Empty(await verify.LocalProxyGatewayRequests.ToListAsync());
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
     private static AppDbContext CreateDb(string databasePath)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()

@@ -677,9 +677,13 @@ public sealed class LocalProxyRuntimeService(
 
             if (portError is not null)
             {
+                var failedAt = clock.UtcNow;
                 session.Status = LocalProxySessionStatus.Error;
                 session.LastError = portError;
+                session.StoppedAt = failedAt;
+                session.LastActivityAt = failedAt;
                 profile.Status = LocalProxyProfileStatus.Error;
+                profile.UpdatedAt = failedAt;
                 await db.SaveChangesAsync(cancellationToken);
                 SetAutomationStatus("Error", codespace?.AccountId, codespace?.Username, codespace?.CodespaceName, _automationStatus.Warning, portError);
                 await events.WriteAsync(new OperationalEventWrite(
@@ -833,9 +837,13 @@ public sealed class LocalProxyRuntimeService(
                 }
 
                 StopProcess(tunnelProcess);
+                var failedAt = clock.UtcNow;
                 session.Status = LocalProxySessionStatus.Error;
                 session.LastError = ex.Message;
+                session.StoppedAt = failedAt;
+                session.LastActivityAt = failedAt;
                 profile.Status = LocalProxyProfileStatus.Error;
+                profile.UpdatedAt = failedAt;
                 await db.SaveChangesAsync(cancellationToken);
                 if (codespace is not null)
                 {
