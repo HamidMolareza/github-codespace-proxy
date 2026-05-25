@@ -5,10 +5,20 @@ services:
     build:
       context: .
       dockerfile: src/GhProxy.Api/Dockerfile
+      network: host
       args:
         DOTNET_BUILD_BASE: "${GH_PROXY_DOTNET_BUILD_BASE:-mcr.microsoft.com/dotnet/sdk:10.0}"
-        BACKEND_RUNTIME_BASE: "${GH_PROXY_BACKEND_RUNTIME_BASE:-mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm}"
+        BACKEND_RUNTIME_BASE: "${GH_PROXY_BACKEND_RUNTIME_BASE:-node:22-bookworm-slim}"
+        NUGET_RESTORE_SOURCE: "${GH_PROXY_NUGET_RESTORE_SOURCE:-https://package-mirror.liara.ir/repository/nuget/index.json}"
         UBUNTU_APT_MIRROR: "${GH_PROXY_UBUNTU_APT_MIRROR:-https://mirror.arvancloud.ir/ubuntu}"
+        DEBIAN_APT_MIRROR: "${GH_PROXY_DEBIAN_APT_MIRROR:-}"
+        DEBIAN_SECURITY_MIRROR: "${GH_PROXY_DEBIAN_SECURITY_MIRROR:-}"
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
+        NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1}"
+        http_proxy: "${http_proxy:-}"
+        https_proxy: "${https_proxy:-}"
+        no_proxy: "${no_proxy:-localhost,127.0.0.1}"
     image: gh-proxy-api:local
     network_mode: host
     restart: unless-stopped
@@ -42,9 +52,16 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      network: host
       args:
-        NODE_BASE: "${GH_PROXY_FRONTEND_BASE:-mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm}"
+        NODE_BASE: "${GH_PROXY_FRONTEND_BASE:-node:22-bookworm-slim}"
         NPM_REGISTRY: "${GH_PROXY_NPM_REGISTRY:-https://package-mirror.liara.ir/repository/npm/}"
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
+        NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1}"
+        http_proxy: "${http_proxy:-}"
+        https_proxy: "${https_proxy:-}"
+        no_proxy: "${no_proxy:-localhost,127.0.0.1}"
     image: gh-proxy-frontend:local
     network_mode: host
     restart: unless-stopped

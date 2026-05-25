@@ -88,6 +88,31 @@ Start:
 docker compose up --build -d
 ```
 
+Build only:
+
+```bash
+docker compose build
+```
+
+If registry or package downloads time out on a restricted network, pass proxy variables from the shell. Compose builds use host networking, so `127.0.0.1:8910` reaches a proxy running on the host:
+
+```bash
+HTTP_PROXY=http://127.0.0.1:8910 \
+HTTPS_PROXY=http://127.0.0.1:8910 \
+NO_PROXY=localhost,127.0.0.1 \
+docker compose build
+```
+
+The default backend/frontend runtime base is `node:22-bookworm-slim`. Override it only when needed:
+
+```bash
+GH_PROXY_BACKEND_RUNTIME_BASE=mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm \
+GH_PROXY_FRONTEND_BASE=mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm \
+docker compose build
+```
+
+The .NET SDK build stage still pulls `mcr.microsoft.com/dotnet/sdk:10.0`. A timeout while Docker is loading metadata for that image happens before any Dockerfile command runs, so fix it through Docker daemon proxy configuration, a working network route, or a pre-pulled local image override through `GH_PROXY_DOTNET_BUILD_BASE`. Docker restore uses the Liara NuGet mirror by default to avoid fallback stalls on `api.nuget.org`; set `GH_PROXY_NUGET_RESTORE_SOURCE=https://api.nuget.org/v3/index.json` when an unrestricted network should restore from official NuGet.
+
 Open:
 
 ```text

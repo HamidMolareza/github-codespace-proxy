@@ -1,7 +1,14 @@
 ARG DOTNET_BUILD_BASE=mcr.microsoft.com/dotnet/sdk:10.0
-ARG BACKEND_RUNTIME_BASE=mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm
+ARG BACKEND_RUNTIME_BASE=node:22-bookworm-slim
 FROM ${DOTNET_BUILD_BASE} AS build
+ARG NUGET_RESTORE_SOURCE=https://package-mirror.liara.ir/repository/nuget/index.json
 ARG UBUNTU_APT_MIRROR=http://archive.ubuntu.com/ubuntu
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
 WORKDIR /src
 
 RUN set -eux; \
@@ -19,8 +26,13 @@ RUN set -eux; \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
+COPY nuget.config Directory.Build.props ./
 COPY src/GhProxy.Api/GhProxy.Api.csproj src/GhProxy.Api/
-RUN dotnet restore src/GhProxy.Api/GhProxy.Api.csproj -p:NuGetAudit=false -r linux-x64
+RUN dotnet restore src/GhProxy.Api/GhProxy.Api.csproj \
+    --configfile nuget.config \
+    --source "${NUGET_RESTORE_SOURCE}" \
+    -p:NuGetAudit=false \
+    -r linux-x64
 
 COPY . .
 RUN dotnet publish src/GhProxy.Api/GhProxy.Api.csproj \
@@ -34,6 +46,14 @@ RUN dotnet publish src/GhProxy.Api/GhProxy.Api.csproj \
 
 FROM ${BACKEND_RUNTIME_BASE} AS runtime
 ARG UBUNTU_APT_MIRROR=http://archive.ubuntu.com/ubuntu
+ARG DEBIAN_APT_MIRROR=
+ARG DEBIAN_SECURITY_MIRROR=
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
 WORKDIR /app
 
 ARG XRAY_VERSION=latest
@@ -50,19 +70,36 @@ RUN set -eux; \
             -e "s#http://security.ubuntu.com/ubuntu#${UBUNTU_APT_MIRROR}#g" \
             /etc/apt/sources.list.d/ubuntu.sources; \
     fi; \
+    if [ -n "${DEBIAN_APT_MIRROR}" ] && [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i \
+            -e "s#http://deb.debian.org/debian#${DEBIAN_APT_MIRROR}#g" \
+            -e "s#https://deb.debian.org/debian#${DEBIAN_APT_MIRROR}#g" \
+            /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -n "${DEBIAN_SECURITY_MIRROR}" ] && [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i \
+            -e "s#http://deb.debian.org/debian-security#${DEBIAN_SECURITY_MIRROR}#g" \
+            -e "s#https://deb.debian.org/debian-security#${DEBIAN_SECURITY_MIRROR}#g" \
+            -e "s#http://security.debian.org/debian-security#${DEBIAN_SECURITY_MIRROR}#g" \
+            -e "s#https://security.debian.org/debian-security#${DEBIAN_SECURITY_MIRROR}#g" \
+            /etc/apt/sources.list.d/debian.sources; \
+    fi; \
     if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v ssh >/dev/null 2>&1; then \
         apt-get update; \
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             bash \
             ca-certificates \
             curl \
-            libicu74 \
-            libssl3t64 \
             libstdc++6 \
             openssh-client \
             tzdata \
             unzip \
             zlib1g; \
+        for package in libicu76 libicu74 libicu72 libssl3t64 libssl3; do \
+            if apt-cache show "$package" >/dev/null 2>&1; then \
+                DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$package"; \
+            fi; \
+        done; \
         rm -rf /var/lib/apt/lists/*; \
     fi
 

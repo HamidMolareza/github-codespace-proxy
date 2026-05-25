@@ -1,6 +1,12 @@
-ARG NODE_BASE=mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm
+ARG NODE_BASE=node:22-bookworm-slim
 FROM ${NODE_BASE} AS build
 ARG NPM_REGISTRY=https://registry.npmjs.org/
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
 WORKDIR /app
 
 RUN npm config set registry "$NPM_REGISTRY" \
@@ -16,6 +22,12 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM ${NODE_BASE} AS runtime
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
 WORKDIR /app
 
 ENV PORT=8080 \

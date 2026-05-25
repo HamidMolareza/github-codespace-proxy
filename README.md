@@ -58,6 +58,17 @@ docker compose up --build -d
 
 Compose uses host networking so `gh`, SSH, and tunnel traffic follow the host network route. The backend image includes `gh`, `ssh`, and Xray, sets `TZ=Asia/Tehran`, and stores app data under the `gh-proxy_gh-proxy-data` Docker volume.
 
+If Docker cannot reach upstream registries directly, build with proxy variables from the shell:
+
+```bash
+HTTP_PROXY=http://127.0.0.1:8910 \
+HTTPS_PROXY=http://127.0.0.1:8910 \
+NO_PROXY=localhost,127.0.0.1 \
+docker compose build
+```
+
+The backend and frontend runtime images default to `node:22-bookworm-slim` to avoid the larger MCR devcontainer image. Docker restore uses the Liara NuGet mirror by default; set `GH_PROXY_NUGET_RESTORE_SOURCE=https://api.nuget.org/v3/index.json` when you want to restore from official NuGet. The .NET SDK build stage still uses `mcr.microsoft.com/dotnet/sdk:10.0`; if Docker times out while loading metadata for that base image, configure the Docker daemon proxy or pre-pull the image through a working network route.
+
 Check the stack:
 
 ```bash
