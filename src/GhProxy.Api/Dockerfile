@@ -1,5 +1,23 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG DOTNET_BUILD_BASE=mcr.microsoft.com/dotnet/sdk:10.0
+ARG BACKEND_RUNTIME_BASE=mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm
+FROM ${DOTNET_BUILD_BASE} AS build
+ARG UBUNTU_APT_MIRROR=http://archive.ubuntu.com/ubuntu
 WORKDIR /src
+
+RUN set -eux; \
+    if ! command -v dotnet >/dev/null 2>&1; then \
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+            sed -i \
+                -e "s#http://archive.ubuntu.com/ubuntu#${UBUNTU_APT_MIRROR}#g" \
+                -e "s#http://security.ubuntu.com/ubuntu#${UBUNTU_APT_MIRROR}#g" \
+                /etc/apt/sources.list.d/ubuntu.sources; \
+        fi; \
+        apt-get update; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates \
+            dotnet-sdk-10.0; \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 COPY src/GhProxy.Api/GhProxy.Api.csproj src/GhProxy.Api/
 RUN dotnet restore src/GhProxy.Api/GhProxy.Api.csproj -p:NuGetAudit=false -r linux-x64
@@ -14,7 +32,8 @@ RUN dotnet publish src/GhProxy.Api/GhProxy.Api.csproj \
     -p:UseAppHost=true \
     -p:NuGetAudit=false
 
-FROM mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm AS runtime
+FROM ${BACKEND_RUNTIME_BASE} AS runtime
+ARG UBUNTU_APT_MIRROR=http://archive.ubuntu.com/ubuntu
 WORKDIR /app
 
 ARG XRAY_VERSION=latest
@@ -23,6 +42,29 @@ ARG GH_VERSION=2.75.0
 ENV ASPNETCORE_URLS=http://+:8080 \
     DOTNET_EnableDiagnostics=0 \
     HOME=/app/data/home
+
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i \
+            -e "s#http://archive.ubuntu.com/ubuntu#${UBUNTU_APT_MIRROR}#g" \
+            -e "s#http://security.ubuntu.com/ubuntu#${UBUNTU_APT_MIRROR}#g" \
+            /etc/apt/sources.list.d/ubuntu.sources; \
+    fi; \
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v ssh >/dev/null 2>&1; then \
+        apt-get update; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bash \
+            ca-certificates \
+            curl \
+            libicu74 \
+            libssl3t64 \
+            libstdc++6 \
+            openssh-client \
+            tzdata \
+            unzip \
+            zlib1g; \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \

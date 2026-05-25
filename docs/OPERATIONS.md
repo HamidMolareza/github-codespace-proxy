@@ -188,13 +188,9 @@ The selected theme is stored in browser `localStorage` as `gh-proxy.theme`.
 
 ## Git Commands In This Workspace
 
-The sandbox has a read-only `.git` mount, so this implementation stores repository metadata under `.repo/git`.
-
-Use:
+This workspace uses a standard `.git/` directory. Use normal Git commands:
 
 ```bash
-git --git-dir=.repo/git --work-tree=. status
-git --git-dir=.repo/git --work-tree=. log --oneline
+git status
+git log --oneline
 ```
-
-On a normal filesystem, this can be converted to a standard `.git` repository later.

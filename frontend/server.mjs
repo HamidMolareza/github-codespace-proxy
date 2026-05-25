@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const port = Number(process.env.PORT ?? '8080');
 const apiBaseUrl = new URL(process.env.API_BASE_URL ?? 'http://backend:8080');
-const root = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dist');
+const modulePath = fileURLToPath(import.meta.url);
+const root = path.join(path.dirname(modulePath), 'dist');
 
 const contentTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -23,7 +24,7 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
-  if (request.url.startsWith('/api/')) {
+  if (isApiRequestUrl(request.url)) {
     await proxyApi(request, response);
     return;
   }
@@ -31,10 +32,18 @@ const server = http.createServer(async (request, response) => {
   await serveStatic(request.url, response);
 });
 
-server.listen(port, '0.0.0.0');
+if (process.argv[1] && path.resolve(process.argv[1]) === modulePath) {
+  server.listen(port, '0.0.0.0');
+}
 
 async function proxyApi(request, response) {
-  const target = new URL(request.url ?? '/', apiBaseUrl);
+  const target = createApiTargetUrl(request.url);
+  if (!target) {
+    response.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify({ error: 'Invalid API request path.' }));
+    return;
+  }
+
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) {
     if (value !== undefined) {
@@ -61,6 +70,26 @@ async function proxyApi(request, response) {
   } catch {
     response.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
     response.end(JSON.stringify({ error: 'Backend API is unavailable.' }));
+  }
+}
+
+function isApiRequestUrl(requestUrl) {
+  return createApiTargetUrl(requestUrl) !== null;
+}
+
+export function createApiTargetUrl(requestUrl, baseUrl = apiBaseUrl) {
+  try {
+    const requestPath = new URL(requestUrl ?? '/', 'http://localhost');
+    if (!requestPath.pathname.startsWith('/api/')) {
+      return null;
+    }
+
+    const target = new URL(baseUrl.origin);
+    target.pathname = requestPath.pathname;
+    target.search = requestPath.search;
+    return target;
+  } catch {
+    return null;
   }
 }
 

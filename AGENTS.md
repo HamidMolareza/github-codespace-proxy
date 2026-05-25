@@ -14,13 +14,13 @@
 
 ## Git
 
-This workspace keeps Git metadata in `.repo/git`; the root `.git/` directory can be empty. Use explicit Git paths:
+This workspace uses a standard `.git/` directory. Use normal Git commands:
 
 ```bash
-git --git-dir=.repo/git --work-tree=. status
-git --git-dir=.repo/git --work-tree=. diff
-git --git-dir=.repo/git --work-tree=. add <paths>
-git --git-dir=.repo/git --work-tree=. commit -m "type: message"
+git status
+git diff
+git add <paths>
+git commit -m "type: message"
 ```
 
 Commit messages should use Conventional Commits. Do not commit secrets, databases, JSONL logs, Docker volumes, `bin/`, `obj/`, `node_modules/`, or `.env` files.

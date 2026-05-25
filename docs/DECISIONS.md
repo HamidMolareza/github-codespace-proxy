@@ -45,8 +45,8 @@ The app assumes the selected Codespace repository provides the proxy workload. I
 
 ## Git Layout Note
 
-This workspace has a read-only `.git` mount. The repository metadata is stored in `.repo/git` and commands in this implementation use:
+This workspace uses a standard `.git/` directory. Use normal Git commands:
 
 ```bash
-git --git-dir=.repo/git --work-tree=. <command>
+git <command>
 ```

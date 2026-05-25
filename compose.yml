@@ -5,6 +5,10 @@ services:
     build:
       context: .
       dockerfile: src/GhProxy.Api/Dockerfile
+      args:
+        DOTNET_BUILD_BASE: "${GH_PROXY_DOTNET_BUILD_BASE:-mcr.microsoft.com/dotnet/sdk:10.0}"
+        BACKEND_RUNTIME_BASE: "${GH_PROXY_BACKEND_RUNTIME_BASE:-mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm}"
+        UBUNTU_APT_MIRROR: "${GH_PROXY_UBUNTU_APT_MIRROR:-https://mirror.arvancloud.ir/ubuntu}"
     image: gh-proxy-api:local
     network_mode: host
     restart: unless-stopped
@@ -38,6 +42,9 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        NODE_BASE: "${GH_PROXY_FRONTEND_BASE:-mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm}"
+        NPM_REGISTRY: "${GH_PROXY_NPM_REGISTRY:-https://package-mirror.liara.ir/repository/npm/}"
     image: gh-proxy-frontend:local
     network_mode: host
     restart: unless-stopped

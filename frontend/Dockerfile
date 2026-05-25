@@ -1,5 +1,13 @@
-FROM mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm AS build
+ARG NODE_BASE=mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm
+FROM ${NODE_BASE} AS build
+ARG NPM_REGISTRY=https://registry.npmjs.org/
 WORKDIR /app
+
+RUN npm config set registry "$NPM_REGISTRY" \
+    && npm config set replace-registry-host always \
+    && npm config set fetch-retries 5 \
+    && npm config set fetch-retry-mintimeout 20000 \
+    && npm config set fetch-retry-maxtimeout 120000
 
 COPY frontend/package*.json ./
 RUN npm ci
@@ -7,7 +15,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm AS runtime
+FROM ${NODE_BASE} AS runtime
 WORKDIR /app
 
 ENV PORT=8080 \
