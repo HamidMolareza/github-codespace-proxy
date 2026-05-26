@@ -30,7 +30,15 @@ public sealed record LocalProxyStatisticsBucketResponse(
     long ErrorSeconds,
     double ActivePercent,
     double ErrorPercent,
-    int SessionCount);
+    int SessionCount,
+    IReadOnlyList<LocalProxyStatisticsSegmentResponse> Segments);
+
+public sealed record LocalProxyStatisticsSegmentResponse(
+    DateTimeOffset Start,
+    DateTimeOffset End,
+    string State,
+    long Seconds,
+    double Percent);
 
 public sealed record LocalProxyStatisticsSessionResponse(
     Guid SessionId,

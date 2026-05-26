@@ -53,10 +53,10 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
         var operationalEvents = await db.OperationalEvents
             .AsNoTracking()
             .ToListAsync(cancellationToken);
-        var errorIntervals = BuildErrorIntervals(sessions, operationalEvents, range.RangeStart, range.RangeEnd, now);
-        var activeIntervals = SubtractIntervals(MergeIntervals(sessions.Where(session => !session.IsError).ToList()), errorIntervals);
+        var errorIntervals = BuildErrorIntervals(operationalEvents, range.RangeStart, range.RangeEnd, now);
+        var activeIntervals = SubtractIntervals(MergeIntervals(sessions), errorIntervals);
         var buckets = range.Buckets
-            .Select(bucket => BuildBucket(bucket, activeIntervals, errorIntervals, sessions, timeZone))
+            .Select(bucket => BuildBucket(bucket, activeIntervals, errorIntervals, sessions, timeZone, now))
             .ToList();
         var samples = (await db.CodespaceStateSamples
             .AsNoTracking()
@@ -147,7 +147,6 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
         return new ProxyInterval(
             clippedStart,
             clippedEnd,
-            session.Status == LocalProxySessionStatus.Error,
             new LocalProxyStatisticsSessionResponse(
                 session.Id,
                 session.AccountId,
@@ -188,35 +187,35 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
         IReadOnlyList<Interval> activeIntervals,
         IReadOnlyList<Interval> errorIntervals,
         IReadOnlyList<ProxyInterval> sessions,
-        TimeZoneInfo timeZone)
+        TimeZoneInfo timeZone,
+        DateTimeOffset now)
     {
-        var activeSeconds = (long)Math.Round(activeIntervals.Sum(interval => OverlapSeconds(interval.Start, interval.End, bucket.Start, bucket.End)));
-        var errorSeconds = (long)Math.Round(errorIntervals.Sum(interval => OverlapSeconds(interval.Start, interval.End, bucket.Start, bucket.End)));
-        var bucketSeconds = Math.Max(0, (long)Math.Round((bucket.End - bucket.Start).TotalSeconds));
+        var knownEnd = Min(now, bucket.End);
+        var knownSeconds = Math.Max(0, (long)Math.Round((knownEnd - bucket.Start).TotalSeconds));
+        var activeSeconds = (long)Math.Round(activeIntervals.Sum(interval => OverlapSeconds(interval.Start, interval.End, bucket.Start, knownEnd)));
+        var errorSeconds = (long)Math.Round(errorIntervals.Sum(interval => OverlapSeconds(interval.Start, interval.End, bucket.Start, knownEnd)));
         var sessionCount = sessions.Count(session => session.Start < bucket.End && session.End > bucket.Start);
+        var segments = BuildSegments(bucket, activeIntervals, errorIntervals, now);
         return new LocalProxyStatisticsBucketResponse(
             bucket.Start,
             bucket.End,
             bucket.Label ?? BuildLabel(bucket.Start, bucket.End, timeZone),
             activeSeconds,
-            Math.Max(0, bucketSeconds - activeSeconds - errorSeconds),
+            Math.Max(0, knownSeconds - activeSeconds - errorSeconds),
             errorSeconds,
-            Percent(activeSeconds, bucketSeconds),
-            Percent(errorSeconds, bucketSeconds),
-            sessionCount);
+            Percent(activeSeconds, knownSeconds),
+            Percent(errorSeconds, knownSeconds),
+            sessionCount,
+            segments);
     }
 
     private static IReadOnlyList<Interval> BuildErrorIntervals(
-        IReadOnlyList<ProxyInterval> sessions,
         IReadOnlyList<OperationalEvent> operationalEvents,
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd,
         DateTimeOffset now)
     {
-        var intervals = sessions
-            .Where(session => session.IsError)
-            .Select(session => new Interval(session.Start, session.End))
-            .ToList();
+        var intervals = new List<Interval>();
 
         DateTimeOffset? openStart = null;
         foreach (var evt in operationalEvents.OrderBy(x => x.Timestamp))
@@ -245,6 +244,51 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
         }
 
         return MergeIntervals(intervals);
+    }
+
+    private static IReadOnlyList<LocalProxyStatisticsSegmentResponse> BuildSegments(
+        BucketRange bucket,
+        IReadOnlyList<Interval> activeIntervals,
+        IReadOnlyList<Interval> errorIntervals,
+        DateTimeOffset now)
+    {
+        var bucketSeconds = Math.Max(0, (long)Math.Round((bucket.End - bucket.Start).TotalSeconds));
+        if (bucket.End <= bucket.Start)
+        {
+            return [];
+        }
+
+        var knownEnd = Min(now, bucket.End);
+        var boundaries = new SortedSet<DateTimeOffset> { bucket.Start, bucket.End };
+        if (now > bucket.Start && now < bucket.End)
+        {
+            boundaries.Add(now);
+        }
+
+        AddIntervalBoundaries(boundaries, activeIntervals, bucket.Start, knownEnd);
+        AddIntervalBoundaries(boundaries, errorIntervals, bucket.Start, knownEnd);
+
+        var segments = new List<LocalProxyStatisticsSegmentResponse>();
+        foreach (var pair in boundaries.Zip(boundaries.Skip(1)))
+        {
+            var start = pair.First;
+            var end = pair.Second;
+            if (end <= start)
+            {
+                continue;
+            }
+
+            var state = start >= now
+                ? "future"
+                : OverlapsAny(start, end, errorIntervals)
+                    ? "error"
+                    : OverlapsAny(start, end, activeIntervals)
+                        ? "up"
+                        : "off";
+            AddSegment(segments, start, end, state, bucketSeconds);
+        }
+
+        return segments;
     }
 
     private static IReadOnlyList<Interval> SubtractIntervals(IReadOnlyList<Interval> source, IReadOnlyList<Interval> blockers)
@@ -296,7 +340,7 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
                 .Select(index =>
                 {
                     var start = ConvertLocalToUtc(startLocal.AddHours(index), timeZone);
-                    var end = index == 23 ? now : ConvertLocalToUtc(startLocal.AddHours(index + 1), timeZone);
+                    var end = ConvertLocalToUtc(startLocal.AddHours(index + 1), timeZone);
                     return new BucketRange(start, end, TimeZoneInfo.ConvertTime(start, timeZone).ToString("HH:mm"));
                 })
                 .ToList();
@@ -309,7 +353,7 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
             .Select(index =>
             {
                 var start = ConvertLocalToUtc(startDate.AddDays(index), timeZone);
-                var end = index == days - 1 ? now : ConvertLocalToUtc(startDate.AddDays(index + 1), timeZone);
+                var end = ConvertLocalToUtc(startDate.AddDays(index + 1), timeZone);
                 return new BucketRange(start, end, TimeZoneInfo.ConvertTime(start, timeZone).ToString("MMM dd"));
             })
             .ToList();
@@ -368,6 +412,56 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
     private static bool IsCoveredByAnyInterval(DateTimeOffset timestamp, IReadOnlyList<Interval> intervals) =>
         intervals.Any(interval => timestamp >= interval.Start && timestamp <= interval.End);
 
+    private static bool OverlapsAny(DateTimeOffset start, DateTimeOffset end, IReadOnlyList<Interval> intervals) =>
+        intervals.Any(interval => interval.Start < end && interval.End > start);
+
+    private static void AddIntervalBoundaries(
+        ISet<DateTimeOffset> boundaries,
+        IReadOnlyList<Interval> intervals,
+        DateTimeOffset rangeStart,
+        DateTimeOffset rangeEnd)
+    {
+        if (rangeEnd <= rangeStart)
+        {
+            return;
+        }
+
+        foreach (var interval in intervals.Where(interval => interval.Start < rangeEnd && interval.End > rangeStart))
+        {
+            boundaries.Add(Max(interval.Start, rangeStart));
+            boundaries.Add(Min(interval.End, rangeEnd));
+        }
+    }
+
+    private static void AddSegment(
+        IList<LocalProxyStatisticsSegmentResponse> segments,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        string state,
+        long bucketSeconds)
+    {
+        if (segments.Count > 0 && segments[^1].State == state && segments[^1].End == start)
+        {
+            var previous = segments[^1];
+            var mergedSeconds = (long)Math.Round((end - previous.Start).TotalSeconds);
+            segments[^1] = previous with
+            {
+                End = end,
+                Seconds = mergedSeconds,
+                Percent = Percent(mergedSeconds, bucketSeconds)
+            };
+            return;
+        }
+
+        var seconds = (long)Math.Round((end - start).TotalSeconds);
+        segments.Add(new LocalProxyStatisticsSegmentResponse(
+            start,
+            end,
+            state,
+            seconds,
+            Percent(seconds, bucketSeconds)));
+    }
+
     private static void AddClippedInterval(
         ICollection<Interval> intervals,
         DateTimeOffset start,
@@ -408,5 +502,5 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
 
     private sealed record Interval(DateTimeOffset Start, DateTimeOffset End);
 
-    private sealed record ProxyInterval(DateTimeOffset Start, DateTimeOffset End, bool IsError, LocalProxyStatisticsSessionResponse Session);
+    private sealed record ProxyInterval(DateTimeOffset Start, DateTimeOffset End, LocalProxyStatisticsSessionResponse Session);
 }

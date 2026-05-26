@@ -837,6 +837,10 @@ select:focus {
 }
 
 .stats-swatch.off {
+  background: #050505;
+}
+
+.stats-swatch.future {
   background: #d1d5db;
 }
 
@@ -872,18 +876,25 @@ select:focus {
   background: #d1d5db;
 }
 
-.stats-bar-active,
-.stats-bar-error {
+.stats-bar-segment {
   height: 100%;
   flex: 0 0 auto;
 }
 
-.stats-bar-active {
+.stats-bar-up {
   background: #16803a;
 }
 
 .stats-bar-error {
   background: #dc2626;
+}
+
+.stats-bar-off {
+  background: #050505;
+}
+
+.stats-bar-future {
+  background: #d1d5db;
 }
 
 .stats-grid {
@@ -1204,12 +1215,20 @@ html[data-theme="dark"] .stats-bar {
   background: #343029;
 }
 
-html[data-theme="dark"] .stats-bar-active {
+html[data-theme="dark"] .stats-bar-up {
   background: #3fbf68;
 }
 
 html[data-theme="dark"] .stats-bar-error {
   background: #f87171;
+}
+
+html[data-theme="dark"] .stats-bar-off {
+  background: #050505;
+}
+
+html[data-theme="dark"] .stats-bar-future {
+  background: #343029;
 }
 
 html[data-theme="dark"] .stats-swatch.active {
@@ -1221,6 +1240,10 @@ html[data-theme="dark"] .stats-swatch.error {
 }
 
 html[data-theme="dark"] .stats-swatch.off {
+  background: #050505;
+}
+
+html[data-theme="dark"] .stats-swatch.future {
   background: #343029;
 }
 

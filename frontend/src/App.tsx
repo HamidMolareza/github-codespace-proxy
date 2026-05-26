@@ -1131,7 +1131,10 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
             <i className="stats-swatch error" /> Error
           </span>
           <span className="stats-legend-item">
-            <i className="stats-swatch off" /> Default/off
+            <i className="stats-swatch off" /> Off/idle
+          </span>
+          <span className="stats-legend-item">
+            <i className="stats-swatch future" /> Future
           </span>
         </section>
       )}
@@ -1143,8 +1146,6 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
           <div className="empty-state">No statistics are available for this period.</div>
         ) : (
           buckets.map((bucket) => {
-            const activePercent = Math.max(0, Math.min(100, bucket.activePercent));
-            const errorPercent = Math.max(0, Math.min(100 - activePercent, bucket.errorPercent));
             return (
               <div className="stats-bar-row" key={`${bucket.start}-${bucket.end}`}>
                 <span>{bucket.label}</span>
@@ -1152,8 +1153,14 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
                   className="stats-bar"
                   title={`${formatDurationSeconds(bucket.activeSeconds)} active, ${formatDurationSeconds(bucket.errorSeconds)} error, ${formatDurationSeconds(bucket.offSeconds)} idle/off`}
                 >
-                  <div className="stats-bar-active" style={{ width: `${activePercent}%` }} />
-                  <div className="stats-bar-error" style={{ width: `${errorPercent}%` }} />
+                  {bucket.segments.map((segment) => (
+                    <div
+                      className={`stats-bar-segment stats-bar-${segment.state}`}
+                      key={`${segment.start}-${segment.end}-${segment.state}`}
+                      style={{ width: `${Math.max(0, Math.min(100, segment.percent))}%` }}
+                      title={`${segmentLabel(segment.state)}: ${formatDurationSeconds(segment.seconds)}`}
+                    />
+                  ))}
                 </div>
                 <strong>{formatDurationSeconds(bucket.activeSeconds)}</strong>
                 <span>{formatDurationSeconds(bucket.errorSeconds)}</span>
@@ -1543,6 +1550,21 @@ function periodLabel(period: LocalProxyStatisticsPeriod) {
       return 'Last 30 days';
     default:
       return 'Last 24 hours';
+  }
+}
+
+function segmentLabel(state: string) {
+  switch (state) {
+    case 'up':
+      return 'Up';
+    case 'error':
+      return 'Error';
+    case 'off':
+      return 'Off/idle';
+    case 'future':
+      return 'Future';
+    default:
+      return 'Unknown';
   }
 }
 

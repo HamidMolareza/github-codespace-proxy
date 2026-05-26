@@ -171,6 +171,8 @@ public sealed class LocalProxyStatisticsServiceTests
                 now.AddHours(-4),
                 LocalProxySessionStatus.Error,
                 "failed to start");
+            AddEvent(db, "local_proxy.start.failed", now.AddHours(-5));
+            AddEvent(db, "local_proxy.xray.started", now.AddHours(-4));
             await db.SaveChangesAsync();
             var service = new LocalProxyStatisticsService(db, new TestClock(now));
 
@@ -179,6 +181,138 @@ public sealed class LocalProxyStatisticsServiceTests
             Assert.Equal(0, stats.Totals.ActiveSeconds);
             Assert.Equal(3600, stats.Totals.ErrorSeconds);
             Assert.Equal(1, stats.Totals.SessionCount);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task GetAsync_DoesNotCountTerminalErrorSessionAsErrorWithoutFailureInterval()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var now = new DateTimeOffset(2026, 5, 25, 8, 0, 0, TimeSpan.Zero);
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = await AddAccountAsync(db);
+            await AddSessionAsync(
+                db,
+                account.Id,
+                now.AddHours(-5),
+                now.AddHours(-4),
+                LocalProxySessionStatus.Error,
+                "Codespace SSH tunnel exited unexpectedly.");
+            await db.SaveChangesAsync();
+            var service = new LocalProxyStatisticsService(db, new TestClock(now));
+
+            var stats = await service.GetAsync("24h", CancellationToken.None);
+
+            Assert.Equal(3600, stats.Totals.ActiveSeconds);
+            Assert.Equal(0, stats.Totals.ErrorSeconds);
+            Assert.Equal(1, stats.Totals.SessionCount);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task GetAsync_ReturnsChronologicalSegmentsForBucketStates()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var now = new DateTimeOffset(2026, 5, 25, 9, 20, 0, TimeSpan.Zero);
+        var bucketStart = new DateTimeOffset(2026, 5, 25, 7, 30, 0, TimeSpan.Zero);
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = await AddAccountAsync(db);
+            await AddSessionAsync(db, account.Id, bucketStart, bucketStart.AddMinutes(30));
+            AddEvent(db, "local_proxy.start.failed", bucketStart.AddMinutes(30));
+            AddEvent(db, "local_proxy.xray.started", bucketStart.AddMinutes(40));
+            await AddSessionAsync(db, account.Id, bucketStart.AddMinutes(40), bucketStart.AddMinutes(50));
+            await db.SaveChangesAsync();
+            var service = new LocalProxyStatisticsService(db, new TestClock(now));
+
+            var stats = await service.GetAsync("24h", CancellationToken.None);
+
+            var bucket = Assert.Single(stats.HourlyBuckets, x => x.Start == bucketStart);
+            Assert.Equal(2400, bucket.ActiveSeconds);
+            Assert.Equal(600, bucket.ErrorSeconds);
+            Assert.Equal(600, bucket.OffSeconds);
+            Assert.Collection(
+                bucket.Segments,
+                segment =>
+                {
+                    Assert.Equal("up", segment.State);
+                    Assert.Equal(1800, segment.Seconds);
+                    Assert.Equal(50, segment.Percent);
+                },
+                segment =>
+                {
+                    Assert.Equal("error", segment.State);
+                    Assert.Equal(600, segment.Seconds);
+                    Assert.Equal(16.7, segment.Percent);
+                },
+                segment =>
+                {
+                    Assert.Equal("up", segment.State);
+                    Assert.Equal(600, segment.Seconds);
+                    Assert.Equal(16.7, segment.Percent);
+                },
+                segment =>
+                {
+                    Assert.Equal("off", segment.State);
+                    Assert.Equal(600, segment.Seconds);
+                    Assert.Equal(16.7, segment.Percent);
+                });
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task GetAsync_ReturnsFutureSegmentForUnknownPartOfCurrentBucket()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var now = new DateTimeOffset(2026, 5, 25, 8, 45, 0, TimeSpan.Zero);
+        var bucketStart = new DateTimeOffset(2026, 5, 25, 8, 30, 0, TimeSpan.Zero);
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = await AddAccountAsync(db);
+            await AddSessionAsync(db, account.Id, bucketStart, null, LocalProxySessionStatus.Running);
+            await db.SaveChangesAsync();
+            var service = new LocalProxyStatisticsService(db, new TestClock(now));
+
+            var stats = await service.GetAsync("24h", CancellationToken.None);
+
+            var bucket = Assert.Single(stats.HourlyBuckets, x => x.Start == bucketStart);
+            Assert.Equal(bucketStart.AddHours(1), bucket.End);
+            Assert.Equal(900, bucket.ActiveSeconds);
+            Assert.Equal(0, bucket.ErrorSeconds);
+            Assert.Equal(0, bucket.OffSeconds);
+            Assert.Collection(
+                bucket.Segments,
+                segment =>
+                {
+                    Assert.Equal("up", segment.State);
+                    Assert.Equal(900, segment.Seconds);
+                    Assert.Equal(25, segment.Percent);
+                },
+                segment =>
+                {
+                    Assert.Equal("future", segment.State);
+                    Assert.Equal(2700, segment.Seconds);
+                    Assert.Equal(75, segment.Percent);
+                });
         }
         finally
         {
@@ -211,8 +345,8 @@ public sealed class LocalProxyStatisticsServiceTests
 
             var stats = await service.GetAsync("24h", CancellationToken.None);
 
-            Assert.Equal(5400, stats.Totals.ActiveSeconds);
-            Assert.Equal(300, stats.Totals.ErrorSeconds);
+            Assert.Equal(5700, stats.Totals.ActiveSeconds);
+            Assert.Equal(0, stats.Totals.ErrorSeconds);
             Assert.Equal(LocalProxySessionStatus.Running.ToString(), stats.Sessions[0].Status);
             Assert.Equal(LocalProxySessionStatus.Stopped.ToString(), stats.Sessions[1].Status);
             Assert.Equal(LocalProxySessionStatus.Error.ToString(), stats.Sessions[2].Status);

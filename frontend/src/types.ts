@@ -165,6 +165,15 @@ export interface LocalProxyStatisticsBucket {
   activePercent: number;
   errorPercent: number;
   sessionCount: number;
+  segments: LocalProxyStatisticsSegment[];
+}
+
+export interface LocalProxyStatisticsSegment {
+  start: string;
+  end: string;
+  state: 'up' | 'error' | 'off' | 'future';
+  seconds: number;
+  percent: number;
 }
 
 export interface LocalProxyStatisticsSession {
