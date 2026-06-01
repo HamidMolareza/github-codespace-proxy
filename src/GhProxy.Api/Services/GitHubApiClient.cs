@@ -15,7 +15,7 @@ public sealed class GitHubApiException(HttpStatusCode statusCode, string message
     public string? Body { get; } = body;
 }
 
-public sealed record GitHubUserProfile(string Login);
+public sealed record GitHubUserProfile(string Login, string? Name, string? PlanName);
 
 public sealed record GitHubCodespaceExportRemote(
     string? Id,
@@ -64,7 +64,13 @@ public sealed class GitHubApiClient(
     public async Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken)
     {
         using var document = await SendAsync(token, HttpMethod.Get, "user", null, "github.user.get", cancellationToken);
-        return new GitHubUserProfile(GetString(document.RootElement, "login") ?? string.Empty);
+        var planName = document.RootElement.TryGetProperty("plan", out var plan) && plan.ValueKind == JsonValueKind.Object
+            ? GetString(plan, "name")
+            : null;
+        return new GitHubUserProfile(
+            GetString(document.RootElement, "login") ?? string.Empty,
+            GetString(document.RootElement, "name"),
+            planName);
     }
 
     public async Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken)

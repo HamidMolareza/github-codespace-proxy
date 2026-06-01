@@ -72,7 +72,20 @@ public sealed class LocalProxyRuntimeService(
         {
             var beforeStart = await codespaces.RefreshCodespaceAsync(accountId, codespaceName, cancellationToken);
             var stopOnStartFailure = beforeStart is null || !IsCodespaceRunning(beforeStart.State);
-            await codespaces.StartAsync(accountId, codespaceName, cancellationToken);
+            if (beforeStart is not null && IsCodespaceRunning(beforeStart.State))
+            {
+                await events.WriteAsync(new OperationalEventWrite(
+                    "codespace_proxy.codespace_start.skipped",
+                    OperationalEventSeverity.Information,
+                    "Codespace is already active; attaching the proxy without requesting another start.",
+                    NodeId: accountId,
+                    Details: new { account.Username, codespaceName, beforeStart.State }),
+                    cancellationToken);
+            }
+            else
+            {
+                await codespaces.StartAsync(accountId, codespaceName, cancellationToken);
+            }
 
             return await StartInternalAsync(
                 selectedProfileId,
@@ -699,6 +712,7 @@ public sealed class LocalProxyRuntimeService(
             var internalSocksPort = GetFreePort();
             int? tunnelPort = codespace is null ? null : GetFreePort();
             Process? tunnelProcess = null;
+            SshDirectTcpBridge? sshDirectBridge = null;
             MixedProxyListener? mixedListener = null;
             XrayProcessHandle? handle = null;
 
@@ -707,7 +721,9 @@ public sealed class LocalProxyRuntimeService(
                 if (codespace is not null && tunnelPort is not null)
                 {
                     SetAutomationStatus("Connecting", codespace.AccountId, codespace.Username, codespace.CodespaceName, _automationStatus.Warning, null);
-                    tunnelProcess = await StartCodespaceTunnelAsync(codespace, session.Id, tunnelPort.Value, cancellationToken);
+                    var tunnel = await StartCodespaceTunnelAsync(codespace, session.Id, tunnelPort.Value, cancellationToken);
+                    tunnelProcess = tunnel.Process;
+                    sshDirectBridge = tunnel.SshDirectBridge;
                 }
 
                 var password = string.IsNullOrWhiteSpace(profile.ProtectedProxyPassword)
@@ -762,6 +778,7 @@ public sealed class LocalProxyRuntimeService(
                     handle,
                     mixedListener,
                     tunnelProcess,
+                    sshDirectBridge,
                     configPath,
                     accessLogPath,
                     errorLogPath,
@@ -800,6 +817,10 @@ public sealed class LocalProxyRuntimeService(
                 {
                     _ = Task.Run(() => MonitorTunnelAsync(state), CancellationToken.None);
                 }
+                if (sshDirectBridge is not null)
+                {
+                    _ = Task.Run(() => MonitorSshDirectBridgeAsync(state), CancellationToken.None);
+                }
 
                 session.Status = LocalProxySessionStatus.Running;
                 profile.Status = LocalProxyProfileStatus.Running;
@@ -836,7 +857,7 @@ public sealed class LocalProxyRuntimeService(
                     await handle.StopAsync();
                 }
 
-                StopProcess(tunnelProcess);
+                await StopTunnelAsync(tunnelProcess, sshDirectBridge);
                 var failedAt = clock.UtcNow;
                 session.Status = LocalProxySessionStatus.Error;
                 session.LastError = ex.Message;
@@ -900,7 +921,7 @@ public sealed class LocalProxyRuntimeService(
             }
 
             await running.Process.StopAsync();
-            StopProcess(running.TunnelProcess);
+            await StopTunnelAsync(running.TunnelProcess, running.SshDirectBridge);
             await PersistStoppedAsync(running, reason, LocalProxySessionStatus.Stopped, cancellationToken);
             await StopBackingCodespaceAsync(running, reason, cancellationToken);
             if (IsIdleStopReason(reason))
@@ -1085,7 +1106,7 @@ public sealed class LocalProxyRuntimeService(
                 await running.MixedListener.DisposeAsync();
             }
 
-            StopProcess(running.TunnelProcess);
+            await StopTunnelAsync(running.TunnelProcess, running.SshDirectBridge);
             ScheduleRetryIfCodespaceRuntime(running, "Xray process exited unexpectedly.");
             if (ReferenceEquals(_running, running))
             {
@@ -1150,6 +1171,50 @@ public sealed class LocalProxyRuntimeService(
         }
     }
 
+    private async Task MonitorSshDirectBridgeAsync(RunningLocalProxy running)
+    {
+        var bridge = running.SshDirectBridge;
+        if (bridge is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await bridge.Completion;
+            if (running.IsStopped)
+            {
+                return;
+            }
+
+            running.MarkStopped();
+            await SetLastErrorAsync(running, "Codespace ssh -W bridge exited unexpectedly.", CancellationToken.None);
+            await PersistStoppedAsync(running, "Codespace ssh -W bridge exited unexpectedly.", LocalProxySessionStatus.Error, CancellationToken.None);
+            if (running.MixedListener is not null)
+            {
+                await running.MixedListener.DisposeAsync();
+            }
+
+            await running.Process.StopAsync();
+            ScheduleRetryIfCodespaceRuntime(running, "Codespace ssh -W bridge exited unexpectedly.");
+            if (ReferenceEquals(_running, running))
+            {
+                _running = null;
+            }
+
+            await events.WriteAsync(new OperationalEventWrite(
+                "codespace_proxy.ssh_direct_bridge.exited",
+                OperationalEventSeverity.Error,
+                "Codespace ssh -W bridge exited unexpectedly.",
+                Details: new { running.ProfileId, running.SessionId, running.CodespaceName, running.LocalTunnelPort }),
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to monitor Codespace ssh -W bridge.");
+        }
+    }
+
     private void ScheduleRetryIfCodespaceRuntime(RunningLocalProxy running, string error)
     {
         if (running.AccountId is not null && !string.IsNullOrWhiteSpace(running.CodespaceName))
@@ -1202,7 +1267,7 @@ public sealed class LocalProxyRuntimeService(
         }
 
         await running.Process.StopAsync();
-        StopProcess(running.TunnelProcess);
+        await StopTunnelAsync(running.TunnelProcess, running.SshDirectBridge);
         await PersistStoppedAsync(running, reason, LocalProxySessionStatus.Error, cancellationToken);
         ScheduleRetryIfCodespaceRuntime(running, reason);
         if (ReferenceEquals(_running, running))
@@ -1376,7 +1441,7 @@ public sealed class LocalProxyRuntimeService(
         }
     }
 
-    private async Task<Process> StartCodespaceTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
+    private async Task<CodespaceTunnelHandle> StartCodespaceTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
     {
         await events.WriteAsync(new OperationalEventWrite(
             "codespace_proxy.starting",
@@ -1426,6 +1491,11 @@ public sealed class LocalProxyRuntimeService(
                 cancellationToken);
         }
 
+        if (UseSshDirectBridgeTunnel())
+        {
+            return await StartSshDirectBridgeTunnelAsync(launch, sessionId, localTunnelPort, cancellationToken);
+        }
+
         if (UseNativeSshTunnel())
         {
             return await StartNativeSshTunnelAsync(launch, sessionId, localTunnelPort, cancellationToken);
@@ -1434,7 +1504,7 @@ public sealed class LocalProxyRuntimeService(
         return await StartPortsForwardTunnelAsync(launch, sessionId, localTunnelPort, cancellationToken);
     }
 
-    private async Task<Process> StartPortsForwardTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
+    private async Task<CodespaceTunnelHandle> StartPortsForwardTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
     {
         SetAutomationStatus("OpeningTunnel", launch.AccountId, launch.Username, launch.CodespaceName, GetAutomationStatus().Warning, null);
         var command = new CommandSpec(
@@ -1452,41 +1522,20 @@ public sealed class LocalProxyRuntimeService(
             SessionId: sessionId,
             EnvironmentVariables: DirectNetworkEnvironment.CreateGitHubCommandEnvironment(launch.Token));
 
-        return await StartTunnelProcessWithRetriesAsync(
+        var process = await StartTunnelProcessWithRetriesAsync(
             command,
             launch,
             sessionId,
             localTunnelPort,
             "gh codespace ports forward",
             cancellationToken);
+        return new CodespaceTunnelHandle(process, null);
     }
 
-    private async Task<Process> StartNativeSshTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
+    private async Task<CodespaceTunnelHandle> StartNativeSshTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
     {
         SetAutomationStatus("OpeningNativeSshTunnel", launch.AccountId, launch.Username, launch.CodespaceName, GetAutomationStatus().Warning, null);
-        var runtimeDirectory = GetRuntimeDirectory(sessionId);
-        Directory.CreateDirectory(runtimeDirectory);
-        var configPath = Path.Combine(runtimeDirectory, "codespace-ssh-config");
-        var configResult = await RunRequiredWithRetriesAsync(
-            "codespace.ssh.config",
-            ["codespace", "ssh", "--config", "-c", launch.CodespaceName],
-            launch,
-            sessionId,
-            TimeSpan.FromSeconds(Math.Clamp(_options.CodespaceStartTimeoutSeconds, 30, 600)),
-            cancellationToken);
-
-        var config = configResult.StandardOutput;
-        var host = TryGetFirstSshConfigHost(config)
-            ?? throw new InvalidOperationException("gh codespace ssh --config did not return a usable Host entry.");
-        await File.WriteAllTextAsync(configPath, config, cancellationToken);
-        await events.WriteAsync(new OperationalEventWrite(
-            "codespace_proxy.ssh_config.generated",
-            OperationalEventSeverity.Information,
-            "Generated OpenSSH config for native Codespace tunnel.",
-            NodeId: launch.AccountId,
-            SessionId: sessionId,
-            Details: new { launch.CodespaceName, ConfigPath = configPath, SshHost = host }),
-            cancellationToken);
+        var (configPath, host) = await GenerateCodespaceSshConfigAsync(launch, sessionId, cancellationToken);
 
         var command = new CommandSpec(
             "ssh",
@@ -1513,13 +1562,135 @@ public sealed class LocalProxyRuntimeService(
             SessionId: sessionId,
             EnvironmentVariables: DirectNetworkEnvironment.CreateGitHubCommandEnvironment(launch.Token));
 
-        return await StartTunnelProcessWithRetriesAsync(
+        var process = await StartTunnelProcessWithRetriesAsync(
             command,
             launch,
             sessionId,
             localTunnelPort,
             "native ssh -L",
             cancellationToken);
+        return new CodespaceTunnelHandle(process, null);
+    }
+
+    private async Task<CodespaceTunnelHandle> StartSshDirectBridgeTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
+    {
+        SetAutomationStatus("OpeningSshDirectBridge", launch.AccountId, launch.Username, launch.CodespaceName, GetAutomationStatus().Warning, null);
+        var (configPath, host) = await GenerateCodespaceSshConfigAsync(launch, sessionId, cancellationToken);
+        var bridge = SshDirectTcpBridge.Start(
+            localTunnelPort,
+            configPath,
+            host,
+            $"127.0.0.1:{launch.RemoteProxyPort}",
+            launch.Token,
+            DirectNetworkEnvironment.CreateGitHubCommandEnvironment(launch.Token),
+            logger);
+
+        try
+        {
+            await WaitForSshDirectBridgeAsync(localTunnelPort, launch, sessionId, cancellationToken);
+            SetAutomationStatus("TunnelReady", launch.AccountId, launch.Username, launch.CodespaceName, GetAutomationStatus().Warning, null);
+            await events.WriteAsync(new OperationalEventWrite(
+                "codespace_proxy.tunnel.ready",
+                OperationalEventSeverity.Information,
+                "Codespace ssh -W bridge is ready.",
+                NodeId: launch.AccountId,
+                SessionId: sessionId,
+                Details: new { launch.CodespaceName, LocalTunnelPort = localTunnelPort, launch.RemoteProxyPort, TunnelKind = "ssh -W bridge" }),
+                cancellationToken);
+            return new CodespaceTunnelHandle(null, bridge);
+        }
+        catch
+        {
+            await bridge.DisposeAsync();
+            throw;
+        }
+    }
+
+    private async Task<(string ConfigPath, string Host)> GenerateCodespaceSshConfigAsync(CodespaceProxyLaunch launch, Guid sessionId, CancellationToken cancellationToken)
+    {
+        var runtimeDirectory = GetRuntimeDirectory(sessionId);
+        Directory.CreateDirectory(runtimeDirectory);
+        var configPath = Path.Combine(runtimeDirectory, "codespace-ssh-config");
+        var configResult = await RunRequiredWithRetriesAsync(
+            "codespace.ssh.config",
+            ["codespace", "ssh", "--config", "-c", launch.CodespaceName],
+            launch,
+            sessionId,
+            TimeSpan.FromSeconds(Math.Clamp(_options.CodespaceStartTimeoutSeconds, 30, 600)),
+            cancellationToken);
+
+        var config = configResult.StandardOutput;
+        var host = TryGetFirstSshConfigHost(config)
+            ?? throw new InvalidOperationException("gh codespace ssh --config did not return a usable Host entry.");
+        var tokenEnvPath = Path.Combine(runtimeDirectory, "gh-token-env");
+        await File.WriteAllTextAsync(tokenEnvPath, BuildGitHubTokenEnvFile(launch.Token), cancellationToken);
+        TrySetOwnerOnlyReadWrite(tokenEnvPath);
+        config = InjectProxyCommandAuth(config, tokenEnvPath);
+        await File.WriteAllTextAsync(configPath, config, cancellationToken);
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.ssh_config.generated",
+            OperationalEventSeverity.Information,
+            "Generated OpenSSH config for Codespace SSH tunnel.",
+            NodeId: launch.AccountId,
+            SessionId: sessionId,
+            Details: new { launch.CodespaceName, ConfigPath = configPath, SshHost = host }),
+            cancellationToken);
+        return (configPath, host);
+    }
+
+    private static string BuildGitHubTokenEnvFile(string token) =>
+        string.Join('\n',
+            [
+                $"export GH_TOKEN={ShellQuote(token)}",
+                $"export GITHUB_TOKEN={ShellQuote(token)}",
+                "export GH_PROMPT_DISABLED=1",
+                "export GH_NO_UPDATE_NOTIFIER=1",
+                ""
+            ]);
+
+    internal static string InjectProxyCommandAuth(string config, string tokenEnvPath)
+    {
+        using var reader = new StringReader(config);
+        var builder = new StringBuilder();
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            var trimmed = line.TrimStart();
+            if (trimmed.StartsWith("ProxyCommand ", StringComparison.OrdinalIgnoreCase))
+            {
+                var indent = line[..(line.Length - trimmed.Length)];
+                var command = trimmed["ProxyCommand ".Length..].Trim();
+                builder.Append(indent)
+                    .Append("ProxyCommand sh -c ")
+                    .Append(ShellQuote($". {ShellQuote(tokenEnvPath)}; exec {command}"))
+                    .AppendLine();
+                continue;
+            }
+
+            builder.AppendLine(line);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string ShellQuote(string value) =>
+        $"'{value.Replace("'", "'\"'\"'", StringComparison.Ordinal)}'";
+
+    private static void TrySetOwnerOnlyReadWrite(string path)
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch
+        {
+            // The token file is still in the private runtime directory if chmod is unavailable.
+        }
     }
 
     private async Task<Process> StartTunnelProcessWithRetriesAsync(
@@ -1581,6 +1752,44 @@ public sealed class LocalProxyRuntimeService(
 
         throw lastError ?? new InvalidOperationException($"Timed out waiting for tunnel port {localTunnelPort}.");
     }
+
+    private async Task WaitForSshDirectBridgeAsync(int localTunnelPort, CodespaceProxyLaunch launch, Guid sessionId, CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_options.CodespaceTunnelReadyTimeoutSeconds, 5, 120));
+        var stopAt = DateTimeOffset.UtcNow + timeout;
+        Exception? lastError = null;
+        while (DateTimeOffset.UtcNow < stopAt)
+        {
+            try
+            {
+                using var client = new TcpClient();
+                await client.ConnectAsync(IPAddress.Loopback, localTunnelPort, cancellationToken);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or SocketException or InvalidOperationException)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(250, cancellationToken);
+        }
+
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.tunnel.retry",
+            OperationalEventSeverity.Warning,
+            "Codespace ssh -W bridge was not ready.",
+            NodeId: launch.AccountId,
+            SessionId: sessionId,
+            StandardError: lastError?.Message,
+            Details: new { launch.CodespaceName, LocalTunnelPort = localTunnelPort, launch.RemoteProxyPort, TunnelKind = "ssh -W bridge" }),
+            cancellationToken);
+        throw lastError ?? new InvalidOperationException($"Timed out waiting for ssh -W bridge port {localTunnelPort}.");
+    }
+
+    private bool UseSshDirectBridgeTunnel() =>
+        string.Equals(_options.CodespaceTunnelMode, "ssh-direct", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(_options.CodespaceTunnelMode, "ssh-w", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(_options.CodespaceTunnelMode, "direct-ssh", StringComparison.OrdinalIgnoreCase);
 
     private bool UseNativeSshTunnel() =>
         string.Equals(_options.CodespaceTunnelMode, "native-ssh", StringComparison.OrdinalIgnoreCase) ||
@@ -1660,10 +1869,159 @@ public sealed class LocalProxyRuntimeService(
             $"proxy_port={proxyPort}",
             $"dashboard_port={dashboardPort}",
             $"proxy_command={QuoteForBash(proxyCommand)}",
+            "fixed_proxy=/tmp/proxy-local/proxy-fixed",
             "mkdir -p /tmp/proxy-local",
-            "if timeout 2 bash -lc \"</dev/tcp/127.0.0.1/${proxy_port}\"; then echo \"remote proxy already listening on ${proxy_port}\"; exit 0; fi",
             "if ! command -v \"${proxy_command}\" >/dev/null 2>&1; then echo \"proxy command '${proxy_command}' was not found in the Codespace. Ensure this Codespace uses the proxy2 devcontainer image.\" >&2; exit 127; fi",
-            "nohup \"${proxy_command}\" --bind 127.0.0.1 --mixed-port \"${proxy_port}\" --dashboard-bind 127.0.0.1 --dashboard-port \"${dashboard_port}\" --usage-log-file /tmp/proxy-local/usage.log >/tmp/proxy-local/proxy.log 2>&1 &",
+            "python3 - \"$(command -v \"${proxy_command}\")\" \"${fixed_proxy}\" <<'PY'",
+            "import os",
+            "import stat",
+            "import sys",
+            "from pathlib import Path",
+            "",
+            "source = Path(sys.argv[1])",
+            "target = Path(sys.argv[2])",
+            "text = source.read_text(encoding='utf-8')",
+            "start_marker = 'def tunnel_bidirectional(left_socket, right_socket):\\n'",
+            "end_marker = '\\n\\nclass ClientTracker:'",
+            "start = text.find(start_marker)",
+            "if start < 0:",
+            "    raise SystemExit('proxy relay function was not found')",
+            "end = text.find(end_marker, start)",
+            "if end < 0:",
+            "    raise SystemExit('proxy relay function end was not found')",
+            "replacement = r'''def tunnel_bidirectional(left_socket, right_socket):",
+            "    left_socket.setblocking(False)",
+            "    right_socket.setblocking(False)",
+            "    sockets = [left_socket, right_socket]",
+            "    buffers = {",
+            "        left_socket: bytearray(),",
+            "        right_socket: bytearray(),",
+            "    }",
+            "    read_closed = {",
+            "        left_socket: False,",
+            "        right_socket: False,",
+            "    }",
+            "    write_shutdown = {",
+            "        left_socket: False,",
+            "        right_socket: False,",
+            "    }",
+            "    stats = {",
+            "        \"left_to_right_bytes\": 0,",
+            "        \"right_to_left_bytes\": 0,",
+            "    }",
+            "    max_pending_bytes = 2 * 1024 * 1024",
+            "",
+            "    def peer_for(sock):",
+            "        return right_socket if sock is left_socket else left_socket",
+            "",
+            "    def is_retryable_socket_error(exc):",
+            "        return isinstance(exc, (BlockingIOError, InterruptedError)) or getattr(exc, \"errno\", None) in {",
+            "            errno.EAGAIN,",
+            "            errno.EWOULDBLOCK,",
+            "            errno.EINTR,",
+            "        }",
+            "",
+            "    def shutdown_write(sock):",
+            "        if write_shutdown[sock]:",
+            "            return",
+            "        write_shutdown[sock] = True",
+            "        try:",
+            "            sock.shutdown(socket.SHUT_WR)",
+            "        except OSError:",
+            "            pass",
+            "",
+            "    def shutdown_peer_when_drained(sock):",
+            "        peer = peer_for(sock)",
+            "        if read_closed[peer] and not buffers[sock]:",
+            "            shutdown_write(sock)",
+            "",
+            "    while True:",
+            "        if read_closed[left_socket] and read_closed[right_socket] and not buffers[left_socket] and not buffers[right_socket]:",
+            "            return stats",
+            "",
+            "        readable = [",
+            "            sock",
+            "            for sock in sockets",
+            "            if not read_closed[sock] and len(buffers[peer_for(sock)]) < max_pending_bytes",
+            "        ]",
+            "        writable = [sock for sock in sockets if buffers[sock] and not write_shutdown[sock]]",
+            "        if not readable and not writable:",
+            "            return stats",
+            "",
+            "        try:",
+            "            ready_read, ready_write, exceptional = select.select(readable, writable, sockets, 1.0)",
+            "        except OSError:",
+            "            return stats",
+            "        if exceptional:",
+            "            return stats",
+            "",
+            "        for current in ready_read:",
+            "            try:",
+            "                data = current.recv(BUFFER_SIZE)",
+            "            except OSError as exc:",
+            "                if is_retryable_socket_error(exc):",
+            "                    continue",
+            "                read_closed[current] = True",
+            "                shutdown_peer_when_drained(peer_for(current))",
+            "                continue",
+            "",
+            "            if not data:",
+            "                read_closed[current] = True",
+            "                shutdown_peer_when_drained(peer_for(current))",
+            "                continue",
+            "",
+            "            target = peer_for(current)",
+            "            buffers[target].extend(data)",
+            "            if current is left_socket:",
+            "                stats[\"left_to_right_bytes\"] += len(data)",
+            "            else:",
+            "                stats[\"right_to_left_bytes\"] += len(data)",
+            "",
+            "        for current in ready_write:",
+            "            if not buffers[current]:",
+            "                continue",
+            "            try:",
+            "                sent = current.send(buffers[current])",
+            "            except OSError as exc:",
+            "                if is_retryable_socket_error(exc):",
+            "                    continue",
+            "                return stats",
+            "            if sent <= 0:",
+            "                return stats",
+            "            del buffers[current][:sent]",
+            "            shutdown_peer_when_drained(current)",
+            "'''",
+            "patched = text[:start] + replacement + text[end:]",
+            "target.write_text(patched, encoding='utf-8')",
+            "mode = source.stat().st_mode",
+            "target.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)",
+            "PY",
+            "if timeout 2 bash -lc \"</dev/tcp/127.0.0.1/${proxy_port}\"; then python3 - \"${proxy_port}\" <<'PY'",
+            "import os",
+            "import signal",
+            "import sys",
+            "import time",
+            "",
+            "port = sys.argv[1]",
+            "for pid_text in os.listdir('/proc'):",
+            "    if not pid_text.isdigit() or pid_text == str(os.getpid()):",
+            "        continue",
+            "    try:",
+            "        raw = open(f'/proc/{pid_text}/cmdline', 'rb').read()",
+            "    except OSError:",
+            "        continue",
+            "    args = [part.decode('utf-8', 'replace') for part in raw.split(b'\\0') if part]",
+            "    if not args or '--mixed-port' not in args or port not in args:",
+            "        continue",
+            "    executable = os.path.basename(args[0])",
+            "    script = os.path.basename(args[1]) if len(args) > 1 else ''",
+            "    if executable not in {'proxy', 'proxy-fixed', 'python', 'python3'} and script not in {'proxy', 'proxy-fixed'}:",
+            "        continue",
+            "    os.kill(int(pid_text), signal.SIGTERM)",
+            "time.sleep(1)",
+            "PY",
+            "fi",
+            "nohup \"${fixed_proxy}\" --bind 127.0.0.1 --mixed-port \"${proxy_port}\" --dashboard-bind 127.0.0.1 --dashboard-port \"${dashboard_port}\" --usage-log-file /tmp/proxy-local/usage.log >/tmp/proxy-local/proxy.log 2>&1 &",
             "for _ in $(seq 1 30); do if timeout 1 bash -lc \"</dev/tcp/127.0.0.1/${proxy_port}\"; then echo \"remote proxy started on ${proxy_port}\"; exit 0; fi; sleep 1; done",
             "echo \"remote proxy did not listen on ${proxy_port}\" >&2",
             "tail -80 /tmp/proxy-local/proxy.log >&2 || true",
@@ -1761,6 +2119,15 @@ public sealed class LocalProxyRuntimeService(
 
     private static string FirstNonEmpty(params string[] values) =>
         values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+
+    private static async Task StopTunnelAsync(Process? process, SshDirectTcpBridge? bridge)
+    {
+        StopProcess(process);
+        if (bridge is not null)
+        {
+            await bridge.DisposeAsync();
+        }
+    }
 
     private static void StopProcess(Process? process)
     {
@@ -2002,6 +2369,7 @@ public sealed class LocalProxyRuntimeService(
 
     private static bool IsCodespaceRunning(string state) =>
         state.Equals("Available", StringComparison.OrdinalIgnoreCase) ||
+        state.Equals("Running", StringComparison.OrdinalIgnoreCase) ||
         state.Equals("Starting", StringComparison.OrdinalIgnoreCase) ||
         state.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
         state.Equals("Provisioning", StringComparison.OrdinalIgnoreCase);
@@ -2076,6 +2444,7 @@ public sealed class LocalProxyRuntimeService(
         XrayProcessHandle process,
         MixedProxyListener? mixedListener,
         Process? tunnelProcess,
+        SshDirectTcpBridge? sshDirectBridge,
         string configPath,
         string accessLogPath,
         string errorLogPath,
@@ -2103,6 +2472,7 @@ public sealed class LocalProxyRuntimeService(
         public XrayProcessHandle Process { get; } = process;
         public MixedProxyListener? MixedListener { get; private set; } = mixedListener;
         public Process? TunnelProcess { get; } = tunnelProcess;
+        public SshDirectTcpBridge? SshDirectBridge { get; } = sshDirectBridge;
         public string ConfigPath { get; } = configPath;
         public string AccessLogPath { get; } = accessLogPath;
         public string ErrorLogPath { get; } = errorLogPath;
@@ -2146,6 +2516,8 @@ public sealed class LocalProxyRuntimeService(
         int RequestThreshold,
         DateTimeOffset WindowExpiresAt,
         string Message);
+
+    private sealed record CodespaceTunnelHandle(Process? Process, SshDirectTcpBridge? SshDirectBridge);
 }
 
 public sealed record LocalProxyRuntimeState(

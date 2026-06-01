@@ -9,6 +9,25 @@ namespace GhProxy.Tests;
 public sealed class GitHubApiClientTests
 {
     [Fact]
+    public async Task GetAuthenticatedUserAsync_ReturnsLoginNameAndPlan()
+    {
+        const string responseJson = """
+        {
+          "login": "octocat",
+          "name": "Octo Cat",
+          "plan": { "name": "Pro" }
+        }
+        """;
+        var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.OK, responseJson));
+
+        var profile = await client.GetAuthenticatedUserAsync("token", CancellationToken.None);
+
+        Assert.Equal("octocat", profile.Login);
+        Assert.Equal("Octo Cat", profile.Name);
+        Assert.Equal("Pro", profile.PlanName);
+    }
+
+    [Fact]
     public async Task GetCodespacesUsageAsync_GroupsComputeAndStorageUsage()
     {
         const string responseJson = """

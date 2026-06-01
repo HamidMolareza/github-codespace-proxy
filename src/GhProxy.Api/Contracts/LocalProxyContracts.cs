@@ -23,6 +23,7 @@ public sealed record LocalProxyAutomationStatusResponse(
     LocalProxyProfileResponse Settings,
     LocalProxySessionResponse? Session,
     string Phase,
+    Guid? SelectedAccountId,
     string? SelectedAccount,
     string? SelectedCodespace,
     string? Warning,

@@ -1,6 +1,7 @@
 using GhProxy.Api.Contracts;
 using GhProxy.Api.Data;
 using GhProxy.Api.Domain;
+using GhProxy.Api.Endpoints;
 using GhProxy.Api.Services;
 using Microsoft.EntityFrameworkCore;
 using System.Net;
@@ -68,6 +69,132 @@ public sealed class GitHubCodespaceServiceTests
                 File.Delete(databasePath);
             }
         }
+    }
+
+    [Fact]
+    public async Task CreateAccountAsync_UsesTokenMetadataWhenOptionalFieldsAreMissing()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var github = new FakeGitHubApiClient
+            {
+                ProfilesByToken =
+                {
+                    ["token"] = new GitHubUserProfile("hamid", "Hamid Molareza", "Pro")
+                }
+            };
+            var service = CreateService(db, github);
+
+            var account = await service.CreateAccountAsync(new GitHubAccountRequest(null, null, "token", "Unknown"), CancellationToken.None);
+
+            Assert.Equal("hamid", account.Username);
+            Assert.Equal("Hamid Molareza", account.DisplayName);
+            Assert.Equal("Pro", account.Plan);
+            Assert.Equal(GitHubAccountValidationStatus.Valid, account.ValidationStatus);
+            Assert.NotNull(account.LastValidatedAt);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CheckAllStatusesAsync_ContinuesWhenOneAccountFails()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var good = new GitHubAccount
+            {
+                DisplayName = "Good",
+                Username = "good",
+                ProtectedPersonalAccessToken = "good-token",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            var bad = new GitHubAccount
+            {
+                DisplayName = "Bad",
+                Username = "bad",
+                ProtectedPersonalAccessToken = "bad-token",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            db.GitHubAccounts.AddRange(good, bad);
+            await db.SaveChangesAsync();
+            var github = new FakeGitHubApiClient
+            {
+                ProfilesByToken =
+                {
+                    ["good-token"] = new GitHubUserProfile("good", "Good Account", "Free")
+                },
+                InvalidTokens = { "bad-token" },
+                Codespaces =
+                [
+                    new GitHubCodespaceRemote(
+                        "fresh",
+                        "Available",
+                        "octocat/hello",
+                        "2-core",
+                        "UsEast",
+                        "https://github.com/codespaces/fresh",
+                        "octocat",
+                        DateTimeOffset.UtcNow.AddHours(-2),
+                        DateTimeOffset.UtcNow.AddHours(-1),
+                        DateTimeOffset.UtcNow.AddMinutes(-10))
+                ]
+            };
+            var service = CreateService(db, github);
+
+            var results = await service.CheckAllStatusesAsync(CancellationToken.None);
+
+            Assert.Equal(2, results.Count);
+            Assert.Contains(results, result => result.AccountId == good.Id && result.Succeeded);
+            Assert.Contains(results, result => result.AccountId == bad.Id && !result.Succeeded);
+            Assert.NotNull(good.LastSyncedAt);
+            Assert.Equal(GitHubAccountValidationStatus.Invalid, bad.ValidationStatus);
+            Assert.Single(await db.CodespaceSnapshots.Where(x => x.AccountId == good.Id).ToListAsync());
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public void ToResponse_CountsActiveAndTotalCodespaces()
+    {
+        var account = new GitHubAccount
+        {
+            DisplayName = "Primary",
+            Username = "octocat",
+            ProtectedPersonalAccessToken = "token",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            Codespaces =
+            [
+                new CodespaceSnapshot { Name = "running", State = "Available" },
+                new CodespaceSnapshot { Name = "starting", State = "Provisioning" },
+                new CodespaceSnapshot { Name = "stopped", State = "Shutdown" }
+            ]
+        };
+
+        var response = GitHubEndpoints.ToResponse(account);
+
+        Assert.Equal(2, response.ActiveCodespaceCount);
+        Assert.Equal(3, response.TotalCodespaceCount);
     }
 
     [Fact]
@@ -385,13 +512,27 @@ public sealed class GitHubCodespaceServiceTests
             "https://github.com/settings/billing/usage",
             []);
         public GitHubCodespaceExportRemote? LatestExport { get; init; } = new("latest-export-id", "succeeded", "https://api.github.com/export/latest", "https://github.com/export/latest", DateTimeOffset.UtcNow);
+        public string AuthenticatedLogin { get; init; } = "octocat";
+        public string? AuthenticatedName { get; init; } = "Octo Cat";
+        public string? AuthenticatedPlan { get; init; } = "Free";
+        public Dictionary<string, GitHubUserProfile> ProfilesByToken { get; init; } = [];
+        public HashSet<string> InvalidTokens { get; init; } = [];
         public int CreateCalls { get; private set; }
         public int StartCalls { get; private set; }
         public bool ThrowStartConflict { get; init; }
         public bool ThrowExportValidation { get; init; }
 
-        public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubUserProfile("octocat"));
+        public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken)
+        {
+            if (InvalidTokens.Contains(token))
+            {
+                throw new GitHubApiException(HttpStatusCode.Unauthorized, "Bad credentials.", "{}");
+            }
+
+            return Task.FromResult(ProfilesByToken.TryGetValue(token, out var profile)
+                ? profile
+                : new GitHubUserProfile(AuthenticatedLogin, AuthenticatedName, AuthenticatedPlan));
+        }
 
         public Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
             Task.FromResult(true);

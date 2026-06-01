@@ -28,27 +28,27 @@ public sealed class CodespaceProxyAutomationService(
         }
 
         var candidates = new List<AccountCandidate>();
+        var warnings = new List<string>();
         foreach (var account in accounts.OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase))
         {
+            GitHubUsageResponse? usage = null;
             try
             {
-                var usage = await codespaces.GetUsageAsync(account.Id, cancellationToken);
+                usage = await codespaces.GetUsageAsync(account.Id, cancellationToken);
                 if (usage.State == GitHubAccountQuotaState.Limited)
                 {
                     await events.WriteAsync(new OperationalEventWrite(
                         "codespace_proxy.account.skipped_limited",
                         OperationalEventSeverity.Warning,
-                        "Skipped GitHub account because Codespaces quota is limited.",
+                        "GitHub account Codespaces quota is limited; new Codespaces and stopped starts are blocked.",
                         NodeId: account.Id,
                         Details: new { account.Username, usage.Message }),
                         cancellationToken);
-                    continue;
                 }
-
-                candidates.Add(new AccountCandidate(account, usage));
             }
             catch (Exception ex) when (ex is GitHubApiException or InvalidOperationException)
             {
+                warnings.Add($"Could not read usage for {account.Username}: {ex.Message}");
                 await events.WriteAsync(new OperationalEventWrite(
                     "codespace_proxy.account.usage_failed",
                     OperationalEventSeverity.Warning,
@@ -58,51 +58,107 @@ public sealed class CodespaceProxyAutomationService(
                     Details: new { account.Username }),
                     cancellationToken);
             }
+
+            IReadOnlyList<CodespaceSnapshot> snapshots;
+            try
+            {
+                snapshots = await codespaces.SyncAsync(account.Id, cancellationToken);
+            }
+            catch (Exception ex) when (ex is GitHubApiException or InvalidOperationException)
+            {
+                warnings.Add($"Could not sync {account.Username}: {ex.Message}");
+                await events.WriteAsync(new OperationalEventWrite(
+                    "codespace_proxy.account.sync_failed",
+                    OperationalEventSeverity.Warning,
+                    "Could not sync Codespaces for GitHub account during proxy selection.",
+                    NodeId: account.Id,
+                    StandardError: ex.Message,
+                    Details: new { account.Username }),
+                    cancellationToken);
+                snapshots = [];
+            }
+
+            candidates.Add(new AccountCandidate(account, usage, snapshots));
         }
 
-        var selectedAccount = candidates
-            .OrderBy(x => UsageRank(x.Usage.State))
-            .ThenBy(x => x.Usage.Quantity ?? decimal.MaxValue)
-            .ThenBy(x => x.Account.DisplayName, StringComparer.OrdinalIgnoreCase)
+        var selectedExisting = candidates
+            .SelectMany(ToCodespaceCandidates)
+            .OrderBy(x => CodespaceRank(x.Codespace.State))
+            .ThenByDescending(x => x.Codespace.LastUsedAt ?? x.Codespace.UpdatedAt ?? x.Codespace.CreatedAt ?? DateTimeOffset.MinValue)
+            .ThenBy(x => UsageRank(x.Account.Usage?.State))
+            .ThenBy(x => x.Account.Usage?.Quantity ?? decimal.MaxValue)
+            .ThenBy(x => x.Account.Account.DisplayName, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
-        if (selectedAccount is null)
+
+        AccountCandidate selectedAccount;
+        CodespaceSnapshot selectedCodespace;
+        var createdNewCodespace = false;
+        if (selectedExisting is not null)
         {
-            return CodespaceProxySelectionResult.Fail("No GitHub account with usable Codespaces quota is available.");
+            selectedAccount = selectedExisting.Account;
+            selectedCodespace = selectedExisting.Codespace;
+            if (IsStoppedState(selectedCodespace.State) &&
+                selectedAccount.Usage?.State == GitHubAccountQuotaState.Limited)
+            {
+                return CodespaceProxySelectionResult.Fail($"Existing Codespace {selectedAccount.Account.Username}/{selectedCodespace.Name} is stopped, but the account quota is limited so it cannot be started.");
+            }
+        }
+        else
+        {
+            selectedAccount = candidates
+                .Where(x => x.Usage?.State != GitHubAccountQuotaState.Limited)
+                .OrderBy(x => UsageRank(x.Usage?.State))
+                .ThenBy(x => x.Usage?.Quantity ?? decimal.MaxValue)
+                .ThenBy(x => x.Account.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+            if (selectedAccount is null)
+            {
+                return CodespaceProxySelectionResult.Fail("No GitHub account with usable Codespaces quota is available.");
+            }
+
+            var token = secrets.Unprotect(selectedAccount.Account.ProtectedPersonalAccessToken);
+            await EnsureForkAsync(selectedAccount.Account, token, cancellationToken);
+            var snapshots = await codespaces.SyncAsync(selectedAccount.Account.Id, cancellationToken);
+            var repositoryFullName = $"{selectedAccount.Account.Username}/{_options.CodespaceRepositoryName}";
+            var existingAfterFork = PickCodespace(snapshots, repositoryFullName);
+            if (existingAfterFork is not null)
+            {
+                selectedCodespace = existingAfterFork;
+            }
+            else
+            {
+                createdNewCodespace = true;
+                selectedCodespace = await codespaces.CreateAsync(
+                    selectedAccount.Account.Id,
+                    new CreateCodespaceRequest(
+                        selectedAccount.Account.Username,
+                        _options.CodespaceRepositoryName,
+                        _options.CodespaceRepositoryRef,
+                        _options.CodespaceGeo,
+                        _options.CodespaceMachine,
+                        _options.CodespaceDisplayName,
+                        30),
+                    cancellationToken);
+            }
         }
 
-        var token = secrets.Unprotect(selectedAccount.Account.ProtectedPersonalAccessToken);
-        await EnsureForkAsync(selectedAccount.Account, token, cancellationToken);
-        var snapshots = await codespaces.SyncAsync(selectedAccount.Account.Id, cancellationToken);
         var repositoryFullName = $"{selectedAccount.Account.Username}/{_options.CodespaceRepositoryName}";
-        var selectedCodespace = PickCodespace(snapshots, repositoryFullName);
-        if (selectedCodespace is null)
-        {
-            selectedCodespace = await codespaces.CreateAsync(
-                selectedAccount.Account.Id,
-                new CreateCodespaceRequest(
-                    selectedAccount.Account.Username,
-                    _options.CodespaceRepositoryName,
-                    _options.CodespaceRepositoryRef,
-                    _options.CodespaceGeo,
-                    _options.CodespaceMachine,
-                    _options.CodespaceDisplayName,
-                    30),
-                cancellationToken);
-        }
-
-        var warnings = await StopExtraCodespacesAsync(accounts, selectedAccount.Account.Id, selectedCodespace.Name, cancellationToken);
+        warnings.AddRange(await StopExtraCodespacesAsync(accounts, selectedAccount.Account.Id, selectedCodespace.Name, cancellationToken));
         await events.WriteAsync(new OperationalEventWrite(
             "codespace_proxy.account.selected",
             OperationalEventSeverity.Information,
-            "Selected GitHub account and Codespace for automatic proxy startup.",
+            createdNewCodespace
+                ? "Created and selected GitHub account and Codespace for automatic proxy startup."
+                : "Selected existing GitHub account and Codespace for automatic proxy startup.",
             NodeId: selectedAccount.Account.Id,
             Details: new
             {
                 selectedAccount.Account.Username,
                 CodespaceName = selectedCodespace.Name,
                 selectedCodespace.State,
-                selectedAccount.Usage.Quantity,
-                selectedAccount.Usage.UnitType,
+                selectedAccount.Usage?.Quantity,
+                selectedAccount.Usage?.UnitType,
+                ReusedExistingCodespace = !createdNewCodespace,
                 WarningCount = warnings.Count
             }),
             cancellationToken);
@@ -113,6 +169,13 @@ public sealed class CodespaceProxyAutomationService(
             selectedCodespace.Name,
             repositoryFullName,
             warnings.Count == 0 ? null : string.Join(" ", warnings)));
+
+        IEnumerable<CodespaceCandidate> ToCodespaceCandidates(AccountCandidate account) =>
+            account.Snapshots
+                .Where(x => IsReusableState(x.State))
+                .Where(x => string.Equals(x.RepositoryFullName, $"{account.Account.Username}/{_options.CodespaceRepositoryName}", StringComparison.OrdinalIgnoreCase))
+                .Where(x => account.Usage?.State != GitHubAccountQuotaState.Limited || IsActiveState(x.State))
+                .Select(x => new CodespaceCandidate(account, x));
     }
 
     private async Task EnsureForkAsync(GitHubAccount account, string token, CancellationToken cancellationToken)
@@ -183,8 +246,10 @@ public sealed class CodespaceProxyAutomationService(
 
                 try
                 {
-                    await codespaces.StopAsync(account.Id, snapshot.Name, cancellationToken);
-                    warnings.Add($"Stopped extra Codespace {account.Username}/{snapshot.Name}.");
+                    var stopped = await StopAndConfirmAsync(account, snapshot, cancellationToken);
+                    warnings.Add(stopped
+                        ? $"Stopped extra Codespace {account.Username}/{snapshot.Name}."
+                        : $"Stop requested for extra Codespace {account.Username}/{snapshot.Name}, but GitHub still reports it active.");
                 }
                 catch (Exception ex)
                 {
@@ -204,6 +269,30 @@ public sealed class CodespaceProxyAutomationService(
         return warnings;
     }
 
+    private async Task<bool> StopAndConfirmAsync(GitHubAccount account, CodespaceSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        await codespaces.StopAsync(account.Id, snapshot.Name, cancellationToken);
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            var refreshed = await codespaces.RefreshCodespaceAsync(account.Id, snapshot.Name, cancellationToken);
+            if (refreshed is null || !IsActiveState(refreshed.State))
+            {
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.extra_stop.pending",
+            OperationalEventSeverity.Warning,
+            "Stop was requested for an extra Codespace, but GitHub still reports it active.",
+            NodeId: account.Id,
+            Details: new { account.Username, snapshot.Name, snapshot.State }),
+            cancellationToken);
+        return false;
+    }
+
     private static CodespaceSnapshot? PickCodespace(IReadOnlyList<CodespaceSnapshot> snapshots, string repositoryFullName) =>
         snapshots
             .Where(x => string.Equals(x.RepositoryFullName, repositoryFullName, StringComparison.OrdinalIgnoreCase))
@@ -211,7 +300,7 @@ public sealed class CodespaceProxyAutomationService(
             .ThenByDescending(x => x.LastUsedAt ?? x.UpdatedAt ?? x.CreatedAt ?? DateTimeOffset.MinValue)
             .FirstOrDefault();
 
-    private static int UsageRank(GitHubAccountQuotaState state) =>
+    private static int UsageRank(GitHubAccountQuotaState? state) =>
         state switch
         {
             GitHubAccountQuotaState.Healthy => 0,
@@ -219,16 +308,36 @@ public sealed class CodespaceProxyAutomationService(
             GitHubAccountQuotaState.Unknown => 2,
             GitHubAccountQuotaState.Unavailable => 3,
             GitHubAccountQuotaState.Limited => 4,
+            null => 3,
             _ => 5
+        };
+
+    private static int CodespaceRank(string state) =>
+        state switch
+        {
+            var value when IsActiveState(value) => 0,
+            var value when IsStoppedState(value) => 1,
+            _ => 2
         };
 
     private static bool IsActiveState(string state) =>
         state.Equals("Available", StringComparison.OrdinalIgnoreCase) ||
+        state.Equals("Running", StringComparison.OrdinalIgnoreCase) ||
         state.Equals("Starting", StringComparison.OrdinalIgnoreCase) ||
         state.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
         state.Equals("Provisioning", StringComparison.OrdinalIgnoreCase);
 
-    private sealed record AccountCandidate(GitHubAccount Account, GitHubUsageResponse Usage);
+    private static bool IsStoppedState(string state) =>
+        state.Equals("Shutdown", StringComparison.OrdinalIgnoreCase) ||
+        state.Equals("ShuttingDown", StringComparison.OrdinalIgnoreCase) ||
+        state.Equals("Stopped", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsReusableState(string state) =>
+        IsActiveState(state) || IsStoppedState(state);
+
+    private sealed record AccountCandidate(GitHubAccount Account, GitHubUsageResponse? Usage, IReadOnlyList<CodespaceSnapshot> Snapshots);
+
+    private sealed record CodespaceCandidate(AccountCandidate Account, CodespaceSnapshot Codespace);
 }
 
 public sealed record CodespaceProxySelection(

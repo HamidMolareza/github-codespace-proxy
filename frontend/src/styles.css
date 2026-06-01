@@ -351,6 +351,10 @@ button[type="submit"],
   letter-spacing: 0;
 }
 
+.title-action {
+  margin-left: auto;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -561,7 +565,7 @@ select:focus {
 
 .account-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 92px 104px auto;
+  grid-template-columns: minmax(180px, 1fr) 92px 104px 82px 76px auto;
   gap: 10px;
   align-items: center;
   min-height: 64px;
@@ -587,6 +591,17 @@ select:focus {
 .account-row small {
   margin-top: 3px;
   color: #667085;
+}
+
+.in-use-note {
+  color: #166534;
+  font-weight: 700;
+}
+
+.account-codespace-count strong,
+.account-codespace-count small {
+  display: block;
+  text-align: right;
 }
 
 .row-actions {
@@ -903,6 +918,16 @@ select:focus {
   gap: 14px;
 }
 
+.stats-log-section {
+  display: grid;
+}
+
+.nested-title {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e6ecf4;
+}
+
 .stats-session-list {
   display: grid;
   gap: 8px;
@@ -934,6 +959,11 @@ select:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.show-more-logs {
+  justify-self: start;
+  margin-top: 12px;
 }
 
 .activity-filters .section-title {

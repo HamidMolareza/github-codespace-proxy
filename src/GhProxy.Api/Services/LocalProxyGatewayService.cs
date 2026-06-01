@@ -127,14 +127,34 @@ public sealed class LocalProxyGatewayService(
                 null,
                 cancellationToken);
 
-            var clientToUpstream = RelayAsync(
+            using var relayCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var clientToUpstream = RelayThenShutdownSendAsync(
                 clientStream,
                 upstreamStream,
+                upstream.Client,
                 socksObserver,
                 target => UpdateGatewayRequestAsync(requestId, "Forwarded", target, null, stopwatch.ElapsedMilliseconds, CancellationToken.None),
-                cancellationToken);
-            var upstreamToClient = RelayAsync(upstreamStream, clientStream, cancellationToken);
-            await Task.WhenAny(clientToUpstream, upstreamToClient);
+                relayCancellation,
+                relayCancellation.Token);
+            var upstreamToClient = RelayThenShutdownSendAsync(
+                upstreamStream,
+                clientStream,
+                client.Client,
+                null,
+                null,
+                relayCancellation,
+                relayCancellation.Token);
+            var firstRelay = await Task.WhenAny(clientToUpstream, upstreamToClient);
+            if (firstRelay.IsFaulted || firstRelay.IsCanceled)
+            {
+                await relayCancellation.CancelAsync();
+            }
+
+            var relayBytes = await Task.WhenAll(clientToUpstream, upstreamToClient);
+            logger.LogDebug(
+                "Codespace proxy gateway relay completed. ClientToUpstreamBytes={ClientToUpstreamBytes}, UpstreamToClientBytes={UpstreamToClientBytes}",
+                relayBytes[0],
+                relayBytes[1]);
             requestTarget = socksObserver?.Target ?? requestTarget;
             await UpdateGatewayRequestAsync(requestId, "Forwarded", requestTarget, null, stopwatch.ElapsedMilliseconds, CancellationToken.None);
         }
@@ -204,12 +224,36 @@ public sealed class LocalProxyGatewayService(
         }
     }
 
-    private async Task RelayAsync(Stream source, Stream destination, CancellationToken cancellationToken)
+    private async Task<long> RelayAsync(Stream source, Stream destination, CancellationToken cancellationToken)
     {
-        await RelayAsync(source, destination, null, null, cancellationToken);
+        return await RelayAsync(source, destination, null, null, cancellationToken);
     }
 
-    private async Task RelayAsync(
+    private async Task<long> RelayThenShutdownSendAsync(
+        Stream source,
+        Stream destination,
+        Socket shutdownSocket,
+        SocksTargetObserver? socksObserver,
+        Func<GatewayRequestTarget, Task>? onSocksTargetFound,
+        CancellationTokenSource relayCancellation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await RelayAsync(source, destination, socksObserver, onSocksTargetFound, cancellationToken);
+        }
+        catch
+        {
+            await relayCancellation.CancelAsync();
+            throw;
+        }
+        finally
+        {
+            TryShutdownSend(shutdownSocket);
+        }
+    }
+
+    private async Task<long> RelayAsync(
         Stream source,
         Stream destination,
         SocksTargetObserver? socksObserver,
@@ -217,23 +261,39 @@ public sealed class LocalProxyGatewayService(
         CancellationToken cancellationToken)
     {
         var buffer = new byte[81920];
+        long bytes = 0;
         while (true)
         {
             var read = await source.ReadAsync(buffer, cancellationToken);
             if (read == 0)
             {
-                return;
+                return bytes;
             }
 
             var hadSocksTarget = socksObserver?.Target is not null;
             socksObserver?.Capture(buffer.AsSpan(0, read));
             await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            bytes += read;
             if (!hadSocksTarget && socksObserver?.Target is not null && onSocksTargetFound is not null)
             {
                 await onSocksTargetFound(socksObserver.Target);
             }
 
             await runtime.RecordGatewayRelayActivityAsync(cancellationToken);
+        }
+    }
+
+    private static void TryShutdownSend(Socket socket)
+    {
+        try
+        {
+            socket.Shutdown(SocketShutdown.Send);
+        }
+        catch (SocketException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
         }
     }
 

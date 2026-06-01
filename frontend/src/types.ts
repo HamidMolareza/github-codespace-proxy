@@ -8,6 +8,8 @@ export interface GitHubAccount {
   plan: string;
   validationStatus: GitHubAccountValidationStatus;
   quotaState: GitHubAccountQuotaState;
+  activeCodespaceCount: number;
+  totalCodespaceCount: number;
   validationMessage?: string | null;
   lastError?: string | null;
   lastValidatedAt?: string | null;
@@ -21,6 +23,17 @@ export interface GitHubAccountForm {
   username: string;
   personalAccessToken: string;
   plan: string;
+}
+
+export interface GitHubAccountStatusCheck {
+  accounts: GitHubAccount[];
+  results: GitHubAccountStatusCheckResult[];
+}
+
+export interface GitHubAccountStatusCheckResult {
+  accountId: string;
+  succeeded: boolean;
+  message: string;
 }
 
 export type LocalProxyProfileStatus = 'Stopped' | 'Starting' | 'Running' | 'Error';
@@ -92,6 +105,7 @@ export interface LocalProxyAutomationStatus {
   settings: LocalProxyProfile;
   session?: LocalProxySession | null;
   phase: string;
+  selectedAccountId?: string | null;
   selectedAccount?: string | null;
   selectedCodespace?: string | null;
   warning?: string | null;

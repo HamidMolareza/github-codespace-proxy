@@ -93,7 +93,7 @@ public sealed class CodespaceProxyAutomationServiceTests
         public List<(string Token, string Name)> StopCalls { get; } = [];
 
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubUserProfile(token.Replace("-token", "", StringComparison.Ordinal)));
+            Task.FromResult(new GitHubUserProfile(token.Replace("-token", "", StringComparison.Ordinal), null, "Free"));
 
         public Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
             Task.FromResult(true);

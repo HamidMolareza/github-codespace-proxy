@@ -13,13 +13,15 @@ public static class GitHubEndpoints
         var accounts = app.MapGroup("/api/github/accounts");
 
         accounts.MapGet("/", async (AppDbContext db, CancellationToken ct) =>
-            await db.GitHubAccounts
+            (await db.GitHubAccounts
                 .AsNoTracking()
+                .Include(x => x.Codespaces)
                 .OrderBy(x => x.DisplayName)
-                .Select(x => ToResponse(x))
-                .ToListAsync(ct));
+                .ToListAsync(ct))
+            .Select(ToResponse)
+            .ToList());
 
-        accounts.MapPost("/", async (GitHubAccountRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
+        accounts.MapPost("/", async (GitHubAccountRequest request, GitHubCodespaceService service, CancellationToken ct) =>
         {
             var validation = ValidateAccount(request, requireToken: true);
             if (validation is not null)
@@ -27,63 +29,39 @@ public static class GitHubEndpoints
                 return Results.BadRequest(validation);
             }
 
-            var username = request.Username.Trim();
-            if (await db.GitHubAccounts.AnyAsync(x => x.Username == username, ct))
+            try
             {
-                return Results.Conflict(new { error = "A GitHub account with this username already exists." });
+                var account = await service.CreateAccountAsync(request, ct);
+                return Results.Created($"/api/github/accounts/{account.Id}", ToResponse(account));
             }
-
-            var now = clock.UtcNow;
-            var account = new GitHubAccount
+            catch (InvalidOperationException ex) when (ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase))
             {
-                DisplayName = request.DisplayName.Trim(),
-                Username = username,
-                ProtectedPersonalAccessToken = secrets.Protect(request.PersonalAccessToken!.Trim()),
-                Plan = string.IsNullOrWhiteSpace(request.Plan) ? "Unknown" : request.Plan.Trim(),
-                CreatedAt = now,
-                UpdatedAt = now
-            };
-
-            db.GitHubAccounts.Add(account);
-            await db.SaveChangesAsync(ct);
-            await audit.WriteAsync("github.account.create", "Created GitHub account.", account.Id, ct);
-            return Results.Created($"/api/github/accounts/{account.Id}", ToResponse(account));
+                return Results.Conflict(new { error = ex.Message });
+            }
+            catch (GitHubApiException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
         });
 
-        accounts.MapPut("/{id:guid}", async (Guid id, GitHubAccountRequest request, AppDbContext db, ISecretProtector secrets, IClock clock, AuditService audit, CancellationToken ct) =>
+        accounts.MapPut("/{id:guid}", async (Guid id, GitHubAccountRequest request, GitHubCodespaceService service, CancellationToken ct) =>
         {
-            var account = await db.GitHubAccounts.FindAsync([id], ct);
-            if (account is null)
+            try
+            {
+                return Results.Ok(ToResponse(await service.UpdateAccountAsync(id, request, ct)));
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
             {
                 return Results.NotFound();
             }
-
-            var validation = ValidateAccount(request, requireToken: false);
-            if (validation is not null)
+            catch (InvalidOperationException ex) when (ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase))
             {
-                return Results.BadRequest(validation);
+                return Results.Conflict(new { error = ex.Message });
             }
-
-            var username = request.Username.Trim();
-            if (await db.GitHubAccounts.AnyAsync(x => x.Id != id && x.Username == username, ct))
+            catch (GitHubApiException ex)
             {
-                return Results.Conflict(new { error = "A GitHub account with this username already exists." });
+                return Results.BadRequest(new { error = ex.Message });
             }
-
-            account.DisplayName = request.DisplayName.Trim();
-            account.Username = username;
-            account.Plan = string.IsNullOrWhiteSpace(request.Plan) ? "Unknown" : request.Plan.Trim();
-            account.UpdatedAt = clock.UtcNow;
-            if (!string.IsNullOrWhiteSpace(request.PersonalAccessToken))
-            {
-                account.ProtectedPersonalAccessToken = secrets.Protect(request.PersonalAccessToken.Trim());
-                account.ValidationStatus = GitHubAccountValidationStatus.Unknown;
-                account.ValidationMessage = null;
-            }
-
-            await db.SaveChangesAsync(ct);
-            await audit.WriteAsync("github.account.update", "Updated GitHub account.", account.Id, ct);
-            return Results.Ok(ToResponse(account));
         });
 
         accounts.MapDelete("/{id:guid}", async (Guid id, AppDbContext db, AuditService audit, CancellationToken ct) =>
@@ -105,6 +83,19 @@ public static class GitHubEndpoints
 
         accounts.MapPost("/{id:guid}/sync", async (Guid id, GitHubCodespaceService service, CancellationToken ct) =>
             Results.Ok((await service.SyncAsync(id, ct)).Select(ToResponse)));
+
+        accounts.MapPost("/status-check", async (GitHubCodespaceService service, AppDbContext db, CancellationToken ct) =>
+        {
+            var results = await service.CheckAllStatusesAsync(ct);
+            var nextAccounts = (await db.GitHubAccounts
+                    .AsNoTracking()
+                    .Include(x => x.Codespaces)
+                    .OrderBy(x => x.DisplayName)
+                    .ToListAsync(ct))
+                .Select(ToResponse)
+                .ToList();
+            return Results.Ok(new GitHubAccountStatusCheckResponse(nextAccounts, results));
+        });
 
         accounts.MapGet("/{id:guid}/usage", async (Guid id, GitHubCodespaceService service, CancellationToken ct) =>
             Results.Ok(await service.GetUsageAsync(id, ct)));
@@ -178,7 +169,7 @@ public static class GitHubEndpoints
         return app;
     }
 
-    private static GitHubAccountResponse ToResponse(GitHubAccount account) =>
+    internal static GitHubAccountResponse ToResponse(GitHubAccount account) =>
         new(
             account.Id,
             account.DisplayName,
@@ -186,6 +177,8 @@ public static class GitHubEndpoints
             account.Plan,
             account.ValidationStatus,
             account.QuotaState,
+            account.Codespaces.Count(IsActiveCodespace),
+            account.Codespaces.Count,
             account.ValidationMessage,
             account.LastError,
             account.LastValidatedAt,
@@ -217,6 +210,13 @@ public static class GitHubEndpoints
             export.HtmlUrl,
             export.CompletedAt);
 
+    internal static bool IsActiveCodespace(CodespaceSnapshot codespace) =>
+        codespace.State.Equals("Available", StringComparison.OrdinalIgnoreCase) ||
+        codespace.State.Equals("Running", StringComparison.OrdinalIgnoreCase) ||
+        codespace.State.Equals("Starting", StringComparison.OrdinalIgnoreCase) ||
+        codespace.State.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
+        codespace.State.Equals("Provisioning", StringComparison.OrdinalIgnoreCase);
+
     private static string ToSentenceCase(string value) =>
         string.IsNullOrWhiteSpace(value)
             ? value
@@ -225,8 +225,6 @@ public static class GitHubEndpoints
     private static object? ValidateAccount(GitHubAccountRequest request, bool requireToken)
     {
         var errors = new Dictionary<string, string[]>();
-        AddRequired(errors, nameof(request.DisplayName), request.DisplayName);
-        AddRequired(errors, nameof(request.Username), request.Username);
         if (requireToken)
         {
             AddRequired(errors, nameof(request.PersonalAccessToken), request.PersonalAccessToken);

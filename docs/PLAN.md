@@ -7,7 +7,7 @@ The active workflow manages GitHub username/PAT records and runs a proxy through
 ## Milestones
 
 1. Keep GitHub account and Codespace snapshot persistence.
-2. Use `gh codespace ports forward` by default, with `native-ssh` as a configurable OpenSSH tunnel mode for VPS routes where the relay command is unstable.
+2. Use `native-ssh` by default, with `ports-forward` and `ssh-direct` as configurable fallback/diagnostic tunnel modes.
 3. Route Xray through the hidden Codespace tunnel instead of direct `freedom` outbound.
 4. Expose one public port for both HTTP and SOCKS clients.
 5. Show Codespace proxy progress and failures through Activity with redacted command output.
@@ -24,3 +24,4 @@ The active workflow manages GitHub username/PAT records and runs a proxy through
 - Limited accounts block create/start behavior through backend validation.
 - Activity shows GitHub, tunnel, Xray, probe, and idle-stop events with redaction.
 - Statistics shows 24-hour hourly and 7/30-day daily proxy activity, plus warnings when GitHub active samples do not match app-managed proxy activity.
+- Large binary downloads are documented as a known limitation for Codespaces-backed proxy mode; domains that can use direct VPS egress should not be forced through the Codespaces tunnel for bulk transfer.

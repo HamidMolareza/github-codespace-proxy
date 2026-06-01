@@ -103,7 +103,7 @@ NO_PROXY=localhost,127.0.0.1 \
 docker compose build
 ```
 
-The default backend/frontend runtime base is `node:22-bookworm-slim`. Override it only when needed:
+The backend and frontend runtime bases both default to `node:22-bookworm-slim` in this repo. Override them independently only when a deployment needs a different base:
 
 ```bash
 GH_PROXY_BACKEND_RUNTIME_BASE=mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm \
@@ -120,6 +120,12 @@ http://127.0.0.1:5173
 ```
 
 In Docker mode, Compose uses `network_mode: host` so Codespaces traffic follows the connected host VPN. Compose sets `LocalProxy__BindHostOverride=127.0.0.1` so the gateway remains local-only. The backend image includes `gh`, `ssh`, and Xray, clears proxy variables for GitHub/Codespaces operations, and sets `HOME=/app/data/home`.
+
+On the Arvan VPS, this is a security boundary. GitHub API, GitHub SSH,
+Codespaces relay, and GitHub asset traffic must use host routes through the
+server-side company VPN. Do not point these operations at proxy-router. The VPS
+deployment runs a route guard before startup; if the relevant destinations do
+not resolve to a `ppp*` route, gh-proxy should remain down or retrying.
 
 Smoke test:
 
@@ -197,7 +203,14 @@ Use the Activity tab Clear button, or call `DELETE /api/activity`, to delete per
 
 The Codespaces tab uses official GitHub REST APIs for normal lifecycle management. The automatic proxy startup then opens a Codespace tunnel from remote `127.0.0.1:8899` to a hidden local tunnel port, then runs Xray behind the public gateway port.
 
-By default, startup verifies `gh codespace ssh -c <codespace> true`, then opens `gh codespace ports forward 8899:<hidden-port> -c <codespace>`. Set `LocalProxy__CodespaceTunnelMode=native-ssh` to generate an OpenSSH config with `gh codespace ssh --config` and run `ssh -N -L 127.0.0.1:<hidden-port>:127.0.0.1:8899` instead. Set `LocalProxy__CodespaceRequireSshReady=false` when the separate readiness command is unreliable but forwarding itself works. Remote proxy verification/startup is skipped by default because the working manual `sp-proxy` flow expects the Codespace proxy to already listen on `8899`; set `LocalProxy__CodespaceEnsureRemoteProxy=true` to ask the app to run the configured `proxy` command inside the Codespace first. If the tunnel exits unexpectedly, the panel reports `Retrying` or `Down`, and the next proxy request or manual Retry triggers startup again. If the idle window is reached, the panel reports `Idle`/`ZzzIdle`; automatic wake is thresholded and the backing Codespace is stopped to save usage.
+By default, startup verifies `gh codespace ssh -c <codespace> true`, generates an OpenSSH config with `gh codespace ssh --config`, then runs a long-lived `ssh -N -L 127.0.0.1:<hidden-port>:127.0.0.1:8899` tunnel. Set `LocalProxy__CodespaceTunnelMode=ports-forward` to use `gh codespace ports forward 8899:<hidden-port> -c <codespace>`, or `LocalProxy__CodespaceTunnelMode=ssh-direct` to open one `ssh -W 127.0.0.1:8899 <codespace-host>` bridge per incoming proxy connection. `ssh-direct` is useful for diagnostics but should not be the default for whole-VPN traffic because each proxy connection creates a separate SSH bridge. Set `LocalProxy__CodespaceRequireSshReady=false` when the separate readiness command is unreliable but forwarding itself works. Remote proxy verification/startup is skipped by default because the working manual `sp-proxy` flow expects the Codespace proxy to already listen on `8899`; set `LocalProxy__CodespaceEnsureRemoteProxy=true` to ask the app to run the configured `proxy` command inside the Codespace first. If the tunnel exits unexpectedly, the panel reports `Retrying` or `Down`, and the next proxy request or manual Retry triggers startup again. If the idle window is reached, the panel reports `Idle`/`ZzzIdle`; automatic wake is thresholded and the backing Codespace is stopped to save usage.
+
+Codespaces-backed proxy mode is not guaranteed for large downloads. Prefer direct VPS egress for large binary domains whenever the VPS can reach the origin; otherwise expect the Codespaces SSH/stdio path to remain a possible source of stalls or truncated responses.
+
+In the Arvan proxy-router stack, gh-proxy is the SOCKS upstream for explicit
+proxy rules only. If the active Codespace, tunnel, or Xray process is not ready,
+matching proxy-rule traffic should fail closed instead of falling back to public
+VPS egress or proxy-router-mediated bootstrap.
 
 ## UI Preferences
 

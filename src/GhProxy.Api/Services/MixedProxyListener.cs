@@ -92,9 +92,26 @@ public sealed class MixedProxyListener : IAsyncDisposable
             await using var upstreamStream = upstream.GetStream();
             upstreamStream.WriteByte((byte)firstByte);
 
-            var clientToUpstream = clientStream.CopyToAsync(upstreamStream, cancellationToken);
-            var upstreamToClient = upstreamStream.CopyToAsync(clientStream, cancellationToken);
-            await Task.WhenAny(clientToUpstream, upstreamToClient);
+            using var relayCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var clientToUpstream = CopyThenShutdownSendAsync(
+                clientStream,
+                upstreamStream,
+                upstream.Client,
+                relayCancellation,
+                relayCancellation.Token);
+            var upstreamToClient = CopyThenShutdownSendAsync(
+                upstreamStream,
+                clientStream,
+                client.Client,
+                relayCancellation,
+                relayCancellation.Token);
+            var firstRelay = await Task.WhenAny(clientToUpstream, upstreamToClient);
+            if (firstRelay.IsFaulted || firstRelay.IsCanceled)
+            {
+                await relayCancellation.CancelAsync();
+            }
+
+            await Task.WhenAll(clientToUpstream, upstreamToClient);
         }
         catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
         {
@@ -103,6 +120,42 @@ public sealed class MixedProxyListener : IAsyncDisposable
         finally
         {
             Interlocked.Decrement(ref _activeConnections);
+        }
+    }
+
+    private static async Task CopyThenShutdownSendAsync(
+        Stream source,
+        Stream destination,
+        Socket shutdownSocket,
+        CancellationTokenSource relayCancellation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await source.CopyToAsync(destination, cancellationToken);
+        }
+        catch
+        {
+            await relayCancellation.CancelAsync();
+            throw;
+        }
+        finally
+        {
+            TryShutdownSend(shutdownSocket);
+        }
+    }
+
+    private static void TryShutdownSend(Socket socket)
+    {
+        try
+        {
+            socket.Shutdown(SocketShutdown.Send);
+        }
+        catch (SocketException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
         }
     }
 

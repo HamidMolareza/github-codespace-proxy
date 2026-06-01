@@ -8,7 +8,7 @@
 - GitHub integration: direct `HttpClient` calls to official GitHub REST API endpoints.
 - Active control plane location: trusted local workstation or Linux host-network Docker Compose stack.
 - Active product mode: multi-account GitHub Codespaces manager with a Codespace-backed Xray proxy.
-- Proxy mode: backend-managed Xray process routed through an OpenSSH tunnel to the selected Codespace.
+- Proxy mode: backend-managed Xray process routed through the selected Codespace. The default tunnel is a long-lived OpenSSH `ssh -N -L` forward; `ports-forward` and per-connection `ssh-direct` are explicit alternatives.
 
 ## Local Proxy Boundaries
 
@@ -18,6 +18,10 @@
 - Docker Compose uses host networking so Codespace tunnel execution follows the host VPN route.
 - Optional proxy authentication is passed to Xray HTTP and SOCKS inbounds from protected password storage.
 - The app does not run a VPS tunnel.
+- Codespaces-backed proxy mode is not treated as reliable bulk-transfer infrastructure. Large downloads should use direct egress when the surrounding gateway can route the destination directly.
+- In the Arvan gateway deployment, GitHub/Codespaces control traffic must not
+  use proxy-router. It follows host company-VPN routes directly and should fail
+  closed if the required destinations are not routed through `ppp*`.
 
 ## GitHub API Boundaries
 

@@ -100,6 +100,7 @@ public static class LocalProxyEndpoints
                 ToResponse(settings),
                 sessionResponse,
                 phase,
+                selectedAccountId,
                 selectedAccount,
                 runtimeStatus.CodespaceName ?? activeSession?.CodespaceName ?? latestSession?.CodespaceName,
                 warning,

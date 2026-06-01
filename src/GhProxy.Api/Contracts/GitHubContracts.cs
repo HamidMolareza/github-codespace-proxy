@@ -3,8 +3,8 @@ using GhProxy.Api.Domain;
 namespace GhProxy.Api.Contracts;
 
 public sealed record GitHubAccountRequest(
-    string DisplayName,
-    string Username,
+    string? DisplayName,
+    string? Username,
     string? PersonalAccessToken,
     string? Plan);
 
@@ -15,12 +15,23 @@ public sealed record GitHubAccountResponse(
     string Plan,
     GitHubAccountValidationStatus ValidationStatus,
     GitHubAccountQuotaState QuotaState,
+    int ActiveCodespaceCount,
+    int TotalCodespaceCount,
     string? ValidationMessage,
     string? LastError,
     DateTimeOffset? LastValidatedAt,
     DateTimeOffset? LastSyncedAt,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+public sealed record GitHubAccountStatusCheckResponse(
+    IReadOnlyList<GitHubAccountResponse> Accounts,
+    IReadOnlyList<GitHubAccountStatusCheckResultResponse> Results);
+
+public sealed record GitHubAccountStatusCheckResultResponse(
+    Guid AccountId,
+    bool Succeeded,
+    string Message);
 
 public sealed record CodespaceSnapshotResponse(
     Guid Id,

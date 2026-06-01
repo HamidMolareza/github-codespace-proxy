@@ -6,6 +6,7 @@ import type {
   CreateCodespaceForm,
   GitHubAccount,
   GitHubAccountForm,
+  GitHubAccountStatusCheck,
   GitHubLifecycleResult,
   GitHubUsage,
   LocalProxyProfile,
@@ -102,6 +103,10 @@ export const api = {
   deleteAccount: (id: string) =>
     request<void>(`/api/github/accounts/${id}`, {
       method: 'DELETE'
+    }),
+  checkAllAccountStatuses: () =>
+    request<GitHubAccountStatusCheck>('/api/github/accounts/status-check', {
+      method: 'POST'
     }),
   validateAccount: (id: string) =>
     request<GitHubAccount>(`/api/github/accounts/${id}/validate`, {

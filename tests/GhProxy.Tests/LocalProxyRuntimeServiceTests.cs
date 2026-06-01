@@ -508,6 +508,22 @@ public sealed class LocalProxyRuntimeServiceTests
         Assert.Null(host);
     }
 
+    [Fact]
+    public void InjectProxyCommandAuth_SourcesTokenEnvBeforeGhProxyCommand()
+    {
+        const string config = """
+            Host codespace-upgraded-winner
+              User root
+              ProxyCommand /usr/local/bin/gh cs ssh -c space --stdio -- -i /tmp/key
+            """;
+
+        var result = LocalProxyRuntimeService.InjectProxyCommandAuth(config, "/tmp/runtime/gh-token-env");
+
+        Assert.Contains("ProxyCommand sh -c", result);
+        Assert.Contains("/tmp/runtime/gh-token-env", result);
+        Assert.Contains("exec /usr/local/bin/gh cs ssh -c space --stdio -- -i /tmp/key", result);
+    }
+
     private static ServiceProvider CreateProvider(
         string databasePath,
         FakeGitHubApiClient? github = null,
@@ -820,7 +836,7 @@ public sealed class LocalProxyRuntimeServiceTests
         public int StartCalls { get; private set; }
 
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubUserProfile("octocat"));
+            Task.FromResult(new GitHubUserProfile("octocat", "Octo Cat", "Free"));
 
         public Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
             Task.FromResult(true);

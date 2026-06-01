@@ -102,6 +102,7 @@ export default function App() {
   const [localStatus, setLocalStatus] = useState<LocalProxyAutomationStatus | null>(null);
   const [statistics, setStatistics] = useState<LocalProxyStatistics | null>(null);
   const [statisticsPeriod, setStatisticsPeriod] = useState<LocalProxyStatisticsPeriod>('24h');
+  const [statisticsLogLimit, setStatisticsLogLimit] = useState(12);
   const [activityEvents, setActivityEvents] = useState<OperationalEvent[]>([]);
   const [activitySummary, setActivitySummary] = useState<ActivitySummary | null>(null);
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null);
@@ -397,7 +398,24 @@ export default function App() {
 
   async function changeStatisticsPeriod(period: LocalProxyStatisticsPeriod) {
     setStatisticsPeriod(period);
+    setStatisticsLogLimit(12);
     await runAction('refresh-statistics', () => loadStatistics(period));
+  }
+
+  async function checkAllAccountStatuses() {
+    await runAction('check-account-statuses', async () => {
+      const result = await api.checkAllAccountStatuses();
+      setAccounts(result.accounts);
+      await loadLocalProxy();
+      await loadCodespaces(selectedAccountId);
+      const failed = result.results.filter((item) => !item.succeeded);
+      return {
+        succeeded: failed.length === 0,
+        message: failed.length === 0
+          ? `Checked ${result.results.length} account(s).`
+          : `Checked ${result.results.length} account(s); ${failed.length} need attention.`
+      };
+    });
   }
 
   return (
@@ -470,6 +488,8 @@ export default function App() {
           codespaces={codespaces}
           codespaceProxyMissingTools={codespaceProxyMissingTools}
           localSession={localSession}
+          proxyAccountId={localStatus?.selectedAccountId ?? localSession?.accountId ?? null}
+          proxyCodespaceName={localStatus?.selectedCodespace ?? localSession?.codespaceName ?? null}
           editingAccountId={editingAccountId}
           selectedAccount={selectedAccount}
           selectedAccountId={selectedAccountId}
@@ -485,6 +505,7 @@ export default function App() {
           onSelectAccount={setSelectedAccountId}
           onStartCodespace={startCodespace}
           onStopCodespace={stopCodespace}
+          onCheckAllAccounts={checkAllAccountStatuses}
           onSyncAccount={(id) => runAction('sync-account', () => api.syncAccount(id))}
           onUpdateAccountField={updateAccountField}
           onUpdateCodespaceField={updateCodespaceField}
@@ -512,9 +533,11 @@ export default function App() {
         <StatisticsPanel
           busy={busy}
           period={statisticsPeriod}
+          logLimit={statisticsLogLimit}
           statistics={statistics}
           onChangePeriod={changeStatisticsPeriod}
           onRefresh={() => runAction('refresh-statistics', () => loadStatistics(statisticsPeriod))}
+          onShowMoreLogs={() => setStatisticsLogLimit((current) => current + 12)}
         />
       )}
 
@@ -547,6 +570,8 @@ interface CodespacesPanelProps {
   codespaces: CodespaceSnapshot[];
   codespaceProxyMissingTools: string[];
   localSession: LocalProxySession | null;
+  proxyAccountId: string | null;
+  proxyCodespaceName: string | null;
   editingAccountId: string | null;
   selectedAccount: GitHubAccount | null;
   selectedAccountId: string | null;
@@ -562,6 +587,7 @@ interface CodespacesPanelProps {
   onSelectAccount: (id: string) => void;
   onStartCodespace: (accountId: string, name: string) => void;
   onStopCodespace: (accountId: string, name: string) => void;
+  onCheckAllAccounts: () => void;
   onSyncAccount: (id: string) => void;
   onUpdateAccountField: <K extends keyof GitHubAccountForm>(field: K, value: GitHubAccountForm[K]) => void;
   onUpdateCodespaceField: <K extends keyof CreateCodespaceForm>(field: K, value: CreateCodespaceForm[K]) => void;
@@ -577,6 +603,8 @@ function CodespacesPanel({
   codespaces,
   codespaceProxyMissingTools,
   localSession,
+  proxyAccountId,
+  proxyCodespaceName,
   editingAccountId,
   selectedAccount,
   selectedAccountId,
@@ -592,6 +620,7 @@ function CodespacesPanel({
   onSelectAccount,
   onStartCodespace,
   onStopCodespace,
+  onCheckAllAccounts,
   onSyncAccount,
   onUpdateAccountField,
   onUpdateCodespaceField,
@@ -608,11 +637,11 @@ function CodespacesPanel({
           <div className="form-grid">
             <label>
               Display name
-              <input value={accountForm.displayName} onChange={(event) => onUpdateAccountField('displayName', event.target.value)} required />
+              <input value={accountForm.displayName} onChange={(event) => onUpdateAccountField('displayName', event.target.value)} placeholder="From token" />
             </label>
             <label>
               Username
-              <input value={accountForm.username} onChange={(event) => onUpdateAccountField('username', event.target.value)} required />
+              <input value={accountForm.username} onChange={(event) => onUpdateAccountField('username', event.target.value)} placeholder="From token" />
             </label>
             <label>
               Plan
@@ -689,6 +718,10 @@ function CodespacesPanel({
         <div className="section-title">
           <Github size={20} />
           <h2>Accounts</h2>
+          <button title="Check all account statuses" type="button" className="secondary title-action" onClick={onCheckAllAccounts} disabled={busy !== null || accounts.length === 0}>
+            <RefreshCw size={16} />
+            Check all
+          </button>
         </div>
         <div className="account-grid">
           {accounts.length === 0 ? (
@@ -699,9 +732,15 @@ function CodespacesPanel({
                 <span>
                   <strong>{account.displayName}</strong>
                   <small>@{account.username}</small>
+                  {proxyAccountId === account.id && <small className="in-use-note">Using {proxyCodespaceName ?? 'Codespace proxy'}</small>}
                 </span>
                 <span className={`badge ${badgeClass(account.validationStatus)}`}>{account.validationStatus}</span>
                 <span className={`badge ${badgeClass(account.quotaState)}`}>{account.quotaState}</span>
+                <span className="account-codespace-count">
+                  <strong>{account.activeCodespaceCount}</strong>
+                  <small>{account.totalCodespaceCount} total</small>
+                </span>
+                {proxyAccountId === account.id ? <span className="badge success">In use</span> : <span />}
                 <span className="row-actions">
                   <button title="Validate token" onClick={(event) => { event.stopPropagation(); onValidateAccount(account.id); }} disabled={busy !== null}>
                     <ShieldCheck size={16} />
@@ -1076,14 +1115,19 @@ function LocalProxyPanel({
 
 interface StatisticsPanelProps {
   busy: string | null;
+  logLimit: number;
   period: LocalProxyStatisticsPeriod;
   statistics: LocalProxyStatistics | null;
   onChangePeriod: (period: LocalProxyStatisticsPeriod) => Promise<void>;
   onRefresh: () => void;
+  onShowMoreLogs: () => void;
 }
 
-function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }: StatisticsPanelProps) {
+function StatisticsPanel({ busy, logLimit, period, statistics, onChangePeriod, onRefresh, onShowMoreLogs }: StatisticsPanelProps) {
   const buckets = period === '24h' ? (statistics?.hourlyBuckets ?? []) : (statistics?.dailyBuckets ?? []);
+  const visibleSessions = statistics?.sessions.slice(0, logLimit) ?? [];
+  const visibleSamples = statistics?.gitHubSamples.slice(0, logLimit) ?? [];
+  const hasMoreLogs = statistics !== null && (statistics.sessions.length > visibleSessions.length || statistics.gitHubSamples.length > visibleSamples.length);
   return (
     <section className="activity-panel">
       <div className="activity-summary stats-summary">
@@ -1179,7 +1223,7 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
       )}
 
       {statistics && (
-        <section className="stats-grid">
+        <section className="stats-log-section">
           <article className="editor">
             <div className="section-title">
               <Monitor size={20} />
@@ -1195,7 +1239,7 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
                   <strong>Duration</strong>
                   <span>Status</span>
                 </div>
-                {statistics.sessions.slice(0, 12).map((session) => (
+                {visibleSessions.map((session) => (
                   <div className="stats-session-row" key={session.sessionId} title={session.lastError ?? undefined}>
                     <span>{formatDateTime(session.startedAt)}</span>
                     <span>{session.codespaceName ?? 'Codespace'}</span>
@@ -1205,10 +1249,8 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
                 ))}
               </div>
             )}
-          </article>
 
-          <article className="editor">
-            <div className="section-title">
+            <div className="section-title nested-title">
               <Github size={20} />
               <h2>GitHub Samples</h2>
             </div>
@@ -1216,7 +1258,7 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
               <div className="empty-state">No GitHub state samples in this period.</div>
             ) : (
               <div className="stats-session-list">
-                {statistics.gitHubSamples.slice(0, 12).map((sample) => (
+                {visibleSamples.map((sample) => (
                   <div className="stats-session-row" key={`${sample.accountId}-${sample.codespaceName}-${sample.observedAt}`}>
                     <span>{formatDateTime(sample.observedAt)}</span>
                     <span>{sample.codespaceName}</span>
@@ -1225,6 +1267,12 @@ function StatisticsPanel({ busy, period, statistics, onChangePeriod, onRefresh }
                   </div>
                 ))}
               </div>
+            )}
+            {hasMoreLogs && (
+              <button type="button" className="secondary show-more-logs" onClick={onShowMoreLogs} disabled={busy !== null}>
+                <RefreshCw size={16} />
+                Show more logs
+              </button>
             )}
           </article>
         </section>
@@ -1461,11 +1509,19 @@ function formatResult(label: string, result: unknown) {
     return result.message;
   }
 
+  if (isActionMessage(result)) {
+    return result.message;
+  }
+
   return label.replaceAll('-', ' ');
 }
 
 function actionSucceeded(result: unknown) {
   if (isGitHubLifecycleResult(result) || isLocalProxyResult(result)) {
+    return result.succeeded;
+  }
+
+  if (isActionMessage(result)) {
     return result.succeeded;
   }
 
@@ -1478,6 +1534,15 @@ function isGitHubLifecycleResult(result: unknown): result is GitHubLifecycleResu
 
 function isLocalProxyResult(result: unknown): result is LocalProxyResult {
   return typeof result === 'object' && result !== null && 'message' in result && 'succeeded' in result && 'session' in result;
+}
+
+function isActionMessage(result: unknown): result is { succeeded: boolean; message: string } {
+  return typeof result === 'object' &&
+    result !== null &&
+    'message' in result &&
+    'succeeded' in result &&
+    typeof (result as { message?: unknown }).message === 'string' &&
+    typeof (result as { succeeded?: unknown }).succeeded === 'boolean';
 }
 
 function lifecycleAccountId(result: unknown) {

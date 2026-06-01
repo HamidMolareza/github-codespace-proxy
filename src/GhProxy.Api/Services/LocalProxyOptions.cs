@@ -14,7 +14,7 @@ public sealed class LocalProxyOptions
     public string CodespaceRemoteProxyCommand { get; set; } = "proxy";
     public int CodespaceRemoteProxyStartupTimeoutSeconds { get; set; } = 120;
     public int CodespaceTunnelReadyTimeoutSeconds { get; set; } = 30;
-    public string CodespaceTunnelMode { get; set; } = "ports-forward";
+    public string CodespaceTunnelMode { get; set; } = "native-ssh";
     public int CodespaceStartTimeoutSeconds { get; set; } = 180;
     public int CodespaceRetryInitialSeconds { get; set; } = 15;
     public int CodespaceRetryMaxSeconds { get; set; } = 300;

@@ -14,13 +14,163 @@ public sealed class GitHubCodespaceService(
     AuditService audit,
     IOperationalEventSink events)
 {
+    public async Task<GitHubAccount> CreateAccountAsync(GitHubAccountRequest request, CancellationToken cancellationToken)
+    {
+        var token = request.PersonalAccessToken?.Trim();
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            throw new InvalidOperationException("Personal access token is required.");
+        }
+
+        var profile = await github.GetAuthenticatedUserAsync(token, cancellationToken);
+        var username = NormalizeUsername(profile);
+        if (await db.GitHubAccounts.AnyAsync(x => x.Username == username, cancellationToken))
+        {
+            throw new InvalidOperationException("A GitHub account with this username already exists.");
+        }
+
+        var now = clock.UtcNow;
+        var account = new GitHubAccount
+        {
+            DisplayName = ResolveDisplayName(request.DisplayName, profile, username),
+            Username = username,
+            ProtectedPersonalAccessToken = secrets.Protect(token),
+            Plan = ResolvePlan(request.Plan, profile.PlanName, "Unknown"),
+            ValidationStatus = GitHubAccountValidationStatus.Valid,
+            ValidationMessage = "Token validated.",
+            LastValidatedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        db.GitHubAccounts.Add(account);
+        await db.SaveChangesAsync(cancellationToken);
+        await audit.WriteAsync("github.account.create", "Created GitHub account.", account.Id, cancellationToken);
+        return account;
+    }
+
+    public async Task<GitHubAccount> UpdateAccountAsync(Guid accountId, GitHubAccountRequest request, CancellationToken cancellationToken)
+    {
+        var account = await GetAccountAsync(accountId, cancellationToken);
+        var token = request.PersonalAccessToken?.Trim();
+        var now = clock.UtcNow;
+
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            var profile = await github.GetAuthenticatedUserAsync(token, cancellationToken);
+            var username = NormalizeUsername(profile);
+            if (await db.GitHubAccounts.AnyAsync(x => x.Id != accountId && x.Username == username, cancellationToken))
+            {
+                throw new InvalidOperationException("A GitHub account with this username already exists.");
+            }
+
+            account.Username = username;
+            account.ProtectedPersonalAccessToken = secrets.Protect(token);
+            account.DisplayName = ResolveDisplayName(request.DisplayName, profile, username);
+            account.Plan = ResolvePlan(request.Plan, profile.PlanName, account.Plan);
+            account.ValidationStatus = GitHubAccountValidationStatus.Valid;
+            account.ValidationMessage = "Token validated.";
+            account.LastError = null;
+            account.LastValidatedAt = now;
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(request.DisplayName))
+            {
+                account.DisplayName = request.DisplayName.Trim();
+            }
+
+            account.Plan = ResolvePlan(request.Plan, null, account.Plan);
+        }
+
+        account.UpdatedAt = now;
+        await db.SaveChangesAsync(cancellationToken);
+        await audit.WriteAsync("github.account.update", "Updated GitHub account.", account.Id, cancellationToken);
+        return account;
+    }
+
+    public async Task<IReadOnlyList<GitHubAccountStatusCheckResultResponse>> CheckAllStatusesAsync(CancellationToken cancellationToken)
+    {
+        var accountIds = await db.GitHubAccounts
+            .AsNoTracking()
+            .OrderBy(x => x.DisplayName)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+        var results = new List<GitHubAccountStatusCheckResultResponse>(accountIds.Count);
+
+        foreach (var accountId in accountIds)
+        {
+            try
+            {
+                var account = await ValidateAsync(accountId, cancellationToken);
+                if (account.ValidationStatus != GitHubAccountValidationStatus.Valid)
+                {
+                    results.Add(new GitHubAccountStatusCheckResultResponse(
+                        accountId,
+                        false,
+                        account.ValidationMessage ?? account.LastError ?? "Token validation failed."));
+                    continue;
+                }
+
+                var snapshots = await SyncAsync(accountId, cancellationToken);
+                var usage = await GetUsageAsync(accountId, cancellationToken);
+                results.Add(new GitHubAccountStatusCheckResultResponse(
+                    accountId,
+                    true,
+                    $"Synced {snapshots.Count} Codespace(s). Quota is {usage.State}."));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                var account = await db.GitHubAccounts.FindAsync([accountId], cancellationToken);
+                if (account is not null)
+                {
+                    account.ValidationStatus = GitHubAccountValidationStatus.Error;
+                    account.LastError = ex.Message;
+                    account.UpdatedAt = clock.UtcNow;
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+
+                await events.WriteAsync(new OperationalEventWrite(
+                    "github.account.status_check.failed",
+                    OperationalEventSeverity.Warning,
+                    ex.Message,
+                    NodeId: accountId), cancellationToken);
+                results.Add(new GitHubAccountStatusCheckResultResponse(accountId, false, ex.Message));
+            }
+        }
+
+        return results;
+    }
+
     public async Task<GitHubAccount> ValidateAsync(Guid accountId, CancellationToken cancellationToken)
     {
         var account = await GetAccountAsync(accountId, cancellationToken);
         try
         {
             var profile = await github.GetAuthenticatedUserAsync(secrets.Unprotect(account.ProtectedPersonalAccessToken), cancellationToken);
-            account.Username = profile.Login;
+            var username = NormalizeUsername(profile);
+            if (await db.GitHubAccounts.AnyAsync(x => x.Id != accountId && x.Username == username, cancellationToken))
+            {
+                account.ValidationStatus = GitHubAccountValidationStatus.Error;
+                account.ValidationMessage = "Another GitHub account already uses this token username.";
+                account.LastError = account.ValidationMessage;
+                account.LastValidatedAt = clock.UtcNow;
+                account.UpdatedAt = clock.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+                return account;
+            }
+
+            account.Username = username;
+            if (string.IsNullOrWhiteSpace(account.DisplayName))
+            {
+                account.DisplayName = ResolveDisplayName(null, profile, username);
+            }
+
+            if (string.IsNullOrWhiteSpace(account.Plan) || account.Plan.Equals("Unknown", StringComparison.OrdinalIgnoreCase))
+            {
+                account.Plan = ResolvePlan(null, profile.PlanName, account.Plan);
+            }
+
             account.ValidationStatus = GitHubAccountValidationStatus.Valid;
             account.ValidationMessage = "Token validated.";
             account.LastError = null;
@@ -338,6 +488,67 @@ public sealed class GitHubCodespaceService(
         snapshot.UpdatedAt = remote.UpdatedAt;
         snapshot.LastUsedAt = remote.LastUsedAt;
         snapshot.LastSyncedAt = now;
+    }
+
+    private static string NormalizeUsername(GitHubUserProfile profile)
+    {
+        var username = profile.Login.Trim();
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            throw new InvalidOperationException("GitHub token did not return a username.");
+        }
+
+        return username;
+    }
+
+    private static string ResolveDisplayName(string? requestedDisplayName, GitHubUserProfile profile, string fallback)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedDisplayName))
+        {
+            return requestedDisplayName.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Name))
+        {
+            return profile.Name.Trim();
+        }
+
+        return fallback;
+    }
+
+    private static string ResolvePlan(string? requestedPlan, string? tokenPlan, string fallback)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedPlan))
+        {
+            var normalized = NormalizePlan(requestedPlan);
+            if (normalized is not null && !normalized.Equals("Unknown", StringComparison.OrdinalIgnoreCase))
+            {
+                return normalized;
+            }
+
+            if (normalized is null)
+            {
+                return requestedPlan.Trim();
+            }
+        }
+
+        return NormalizePlan(tokenPlan) ?? (string.IsNullOrWhiteSpace(fallback) ? "Unknown" : fallback);
+    }
+
+    private static string? NormalizePlan(string? plan)
+    {
+        if (string.IsNullOrWhiteSpace(plan))
+        {
+            return null;
+        }
+
+        return plan.Trim().ToLowerInvariant() switch
+        {
+            "free" => "Free",
+            "pro" => "Pro",
+            "unknown" => "Unknown",
+            _ => null
+        };
     }
 
     private static void ValidateCreate(CreateCodespaceRequest request)
