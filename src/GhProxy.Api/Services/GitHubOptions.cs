@@ -6,5 +6,6 @@ public sealed class GitHubOptions
     public string ApiVersion { get; set; } = "2026-03-10";
     public int SyncIntervalSeconds { get; set; } = 300;
     public int AutoStopIdleMinutes { get; set; } = 30;
+    public bool AutoDeleteStorageLimitedProxyCodespaces { get; set; } = true;
     public int RequestTimeoutSeconds { get; set; } = 30;
 }

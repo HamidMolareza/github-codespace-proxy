@@ -93,7 +93,9 @@ docker compose down
 
 ## Codespace Proxy Flow
 
-The gateway binds the public proxy port immediately. When user proxy traffic arrives, the backend selects the lowest-usage eligible account, ensures the configured proxy Codespace exists, starts or resumes it, opens a tunnel from remote `127.0.0.1:8899` to a hidden local port, and routes Xray through that tunnel.
+The gateway binds the public proxy port immediately. When user proxy traffic arrives, the backend reuses an existing configured proxy Codespace before creating anything new: active Codespaces first, stopped Codespaces second, and a new Codespace only when no reusable `proxy2` Codespace exists. It then starts or attaches to the selected Codespace, opens a tunnel from remote `127.0.0.1:8899` to a hidden local port, and routes Xray through that tunnel.
+
+For cost control, selection stops extra active app-managed `proxy2` Codespaces after choosing the backend. If storage quota is limited, the app automatically deletes stopped app-managed `proxy2` Codespaces to remove storage cost. Manual or unrelated repository Codespaces are not deleted automatically.
 
 The default tunnel mode uses an OpenSSH config from `gh codespace ssh --config`, then runs one long-lived OpenSSH local forward:
 

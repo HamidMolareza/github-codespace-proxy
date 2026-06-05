@@ -1,3 +1,4 @@
+using GhProxy.Api.Contracts;
 using GhProxy.Api.Data;
 using GhProxy.Api.Domain;
 using Microsoft.EntityFrameworkCore;
@@ -35,7 +36,7 @@ public sealed class GitHubCodespaceMaintenanceService(
         }
     }
 
-    private async Task RunOnceAsync(CancellationToken cancellationToken)
+    internal async Task RunOnceAsync(CancellationToken cancellationToken)
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -50,6 +51,7 @@ public sealed class GitHubCodespaceMaintenanceService(
         foreach (var accountId in accountIds)
         {
             IReadOnlyList<CodespaceSnapshot> snapshots;
+            GitHubUsageResponse? usage = null;
             try
             {
                 snapshots = await service.SyncAsync(accountId, cancellationToken);
@@ -63,6 +65,30 @@ public sealed class GitHubCodespaceMaintenanceService(
                     NodeId: accountId,
                     StandardError: ex.ToString()), cancellationToken);
                 continue;
+            }
+
+            try
+            {
+                usage = await service.GetUsageAsync(accountId, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                await events.WriteAsync(new OperationalEventWrite(
+                    "github.maintenance.usage.failed",
+                    OperationalEventSeverity.Warning,
+                    ex.Message,
+                    NodeId: accountId,
+                    StandardError: ex.ToString()), cancellationToken);
+            }
+
+            if (usage is not null)
+            {
+                var account = await db.GitHubAccounts.AsNoTracking().FirstOrDefaultAsync(x => x.Id == accountId, cancellationToken);
+                if (account is not null)
+                {
+                    var cleanup = scope.ServiceProvider.GetRequiredService<CodespaceStorageCleanupService>();
+                    snapshots = (await cleanup.CleanupAsync(account, usage, snapshots, cancellationToken)).Snapshots;
+                }
             }
 
             foreach (var snapshot in snapshots.Where(ShouldStop))

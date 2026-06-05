@@ -152,6 +152,44 @@ public sealed class LocalProxyRuntimeServiceTests
     }
 
     [Fact]
+    public async Task StartCodespaceProxyAsync_SkipsGitHubStartWhenCodespaceAlreadyActive()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var github = new FakeGitHubApiClient
+        {
+            Codespaces =
+            [
+                new GitHubCodespaceRemote(
+                    "fresh",
+                    "Available",
+                    "octocat/proxy2",
+                    null,
+                    null,
+                    null,
+                    null,
+                    DateTimeOffset.UtcNow.AddHours(-2),
+                    DateTimeOffset.UtcNow.AddHours(-1),
+                    DateTimeOffset.UtcNow.AddMinutes(-10))
+            ]
+        };
+        await using var provider = CreateProvider(databasePath, github);
+        try
+        {
+            var account = await CreateAccountAsync(provider);
+            var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
+
+            var result = await runtime.StartCodespaceProxyAsync(account.Id, "fresh", null, CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(0, github.StartCalls);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task RetryIfDueAsync_DoesNotScheduleOlderFailureWhenLatestCodespaceSessionStopped()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");

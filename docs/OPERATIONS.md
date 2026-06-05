@@ -29,7 +29,9 @@ The frontend proxies `/api/*` to `http://127.0.0.1:5080`.
 
 PAT values are encrypted at rest and are not displayed after save.
 
-The app uses Codespaces as the proxy backend only for accounts you add and authorize. It prefers the configured account with the lowest Codespaces usage, skips accounts marked limited, and stops extra running Codespaces so only one Codespace backend remains active.
+The app uses Codespaces as the proxy backend only for accounts you add and authorize. For cost control, automatic startup reuses an existing app-managed `proxy2` Codespace before creating anything new: active Codespaces first, stopped Codespaces second, and creation only when no reusable `proxy2` Codespace exists. It blocks new create/start work on limited accounts and stops extra active app-managed `proxy2` Codespaces so only one proxy backend remains active.
+
+When storage quota is limited, automatic cleanup deletes stopped app-managed `proxy2` Codespaces to remove storage cost. Manual or unrelated repository Codespaces are not deleted automatically. Set `GitHub__AutoDeleteStorageLimitedProxyCodespaces=false` to disable automatic deletion.
 
 ## Codespace Proxy Workflow
 
@@ -38,7 +40,7 @@ The app uses Codespaces as the proxy backend only for accounts you add and autho
 3. Keep `Bind host` as `127.0.0.1` for direct local runs.
 4. Keep `Proxy port` as `8910` unless that port is already in use.
 5. Set username/password only if you want proxy authentication.
-6. Send traffic to the proxy port. The backend selects the lowest-usage account, ensures the `wproxy97/proxy2` fork and Codespace exist, starts/resumes the Codespace, opens the configured Codespace tunnel to `8899:<hidden-port>`, starts Xray through that hidden tunnel, and serves the waiting request.
+6. Send traffic to the proxy port. The backend reuses an existing `wproxy97/proxy2` Codespace when one is available, creates one only when none exists, starts or attaches to the selected Codespace, opens the configured Codespace tunnel to `8899:<hidden-port>`, starts Xray through that hidden tunnel, and serves the waiting request.
 7. Watch the Codespace Proxy panel and Activity tab for selected account, selected Codespace, tunnel, Xray, probe, retry, reconnect, and idle-stop events.
 
 The Automation Status card distinguishes `Up`, `Starting`, `Retrying`, `Idle`, and `Down`. It also shows the latest request time, idle duration, idle-stop countdown, retry countdown, selected account, and selected Codespace when available.

@@ -38,6 +38,7 @@ services:
       LocalProxy__CodespaceRemoteProxyStartupTimeoutSeconds: 120
       LocalProxy__CodespaceTunnelReadyTimeoutSeconds: 30
       GitHub__AutoStopIdleMinutes: 30
+      GitHub__AutoDeleteStorageLimitedProxyCodespaces: true
       GitHub__SyncIntervalSeconds: 300
     volumes:
       - gh-proxy-data:/app/data

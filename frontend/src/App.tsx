@@ -626,6 +626,8 @@ function CodespacesPanel({
   onUpdateCodespaceField,
   onValidateAccount
 }: CodespacesPanelProps) {
+  const accountCostWarning = buildAccountCostWarning(accounts, proxyAccountId);
+
   return (
     <section className="content-grid">
       <section className="panel-stack">
@@ -723,40 +725,49 @@ function CodespacesPanel({
             Check all
           </button>
         </div>
+        {accountCostWarning && (
+          <div className="notice warning account-cost-warning">
+            <AlertTriangle size={18} />
+            <span>{accountCostWarning}</span>
+          </div>
+        )}
         <div className="account-grid">
           {accounts.length === 0 ? (
             <div className="empty-state">No GitHub accounts yet.</div>
           ) : (
-            accounts.map((account) => (
-              <article className={`account-row ${account.id === selectedAccountId ? 'selected-row' : ''}`} key={account.id} onClick={() => onSelectAccount(account.id)}>
-                <span>
-                  <strong>{account.displayName}</strong>
-                  <small>@{account.username}</small>
-                  {proxyAccountId === account.id && <small className="in-use-note">Using {proxyCodespaceName ?? 'Codespace proxy'}</small>}
-                </span>
-                <span className={`badge ${badgeClass(account.validationStatus)}`}>{account.validationStatus}</span>
-                <span className={`badge ${badgeClass(account.quotaState)}`}>{account.quotaState}</span>
-                <span className="account-codespace-count">
-                  <strong>{account.activeCodespaceCount}</strong>
-                  <small>{account.totalCodespaceCount} total</small>
-                </span>
-                {proxyAccountId === account.id ? <span className="badge success">In use</span> : <span />}
-                <span className="row-actions">
-                  <button title="Validate token" onClick={(event) => { event.stopPropagation(); onValidateAccount(account.id); }} disabled={busy !== null}>
-                    <ShieldCheck size={16} />
-                  </button>
-                  <button title="Sync Codespaces" onClick={(event) => { event.stopPropagation(); onSyncAccount(account.id); }} disabled={busy !== null}>
-                    <RefreshCw size={16} />
-                  </button>
-                  <button title="Edit" onClick={(event) => { event.stopPropagation(); onEditAccount(account); }} disabled={busy !== null}>
-                    <Pencil size={16} />
-                  </button>
-                  <button title="Delete" className="danger" onClick={(event) => { event.stopPropagation(); if (confirmAction(`Delete GitHub account "${account.displayName}"?`)) onDeleteAccount(account.id); }} disabled={busy !== null}>
-                    <Trash2 size={16} />
-                  </button>
-                </span>
-              </article>
-            ))
+            accounts.map((account) => {
+              const costBadge = getAccountCostBadge(account, proxyAccountId);
+              return (
+                <article className={`account-row ${account.id === selectedAccountId ? 'selected-row' : ''}`} key={account.id} onClick={() => onSelectAccount(account.id)}>
+                  <span>
+                    <strong>{account.displayName}</strong>
+                    <small>@{account.username}</small>
+                    {proxyAccountId === account.id && <small className="in-use-note">Using {proxyCodespaceName ?? 'Codespace proxy'}</small>}
+                  </span>
+                  <span className={`badge ${badgeClass(account.validationStatus)}`}>{account.validationStatus}</span>
+                  <span className={`badge ${badgeClass(account.quotaState)}`}>{account.quotaState}</span>
+                  <span className="account-codespace-count">
+                    <strong>{account.activeCodespaceCount}</strong>
+                    <small>{account.totalCodespaceCount} total</small>
+                  </span>
+                  {costBadge ? <span className={`badge ${costBadge.className}`}>{costBadge.label}</span> : <span />}
+                  <span className="row-actions">
+                    <button title="Validate token" onClick={(event) => { event.stopPropagation(); onValidateAccount(account.id); }} disabled={busy !== null}>
+                      <ShieldCheck size={16} />
+                    </button>
+                    <button title="Sync Codespaces" onClick={(event) => { event.stopPropagation(); onSyncAccount(account.id); }} disabled={busy !== null}>
+                      <RefreshCw size={16} />
+                    </button>
+                    <button title="Edit" onClick={(event) => { event.stopPropagation(); onEditAccount(account); }} disabled={busy !== null}>
+                      <Pencil size={16} />
+                    </button>
+                    <button title="Delete" className="danger" onClick={(event) => { event.stopPropagation(); if (confirmAction(`Delete GitHub account "${account.displayName}"?`)) onDeleteAccount(account.id); }} disabled={busy !== null}>
+                      <Trash2 size={16} />
+                    </button>
+                  </span>
+                </article>
+              );
+            })
           )}
         </div>
 
@@ -1682,6 +1693,57 @@ function quotaClass(percent: number | null) {
   }
 
   return 'quota-healthy';
+}
+
+function getAccountCostBadge(account: GitHubAccount, proxyAccountId: string | null) {
+  const activeInUse = proxyAccountId === account.id && account.activeCodespaceCount > 0 ? 1 : 0;
+  const extraActive = Math.max(0, account.activeCodespaceCount - activeInUse);
+  if (extraActive > 0) {
+    return { label: 'Extra active', className: 'warning' };
+  }
+
+  const stoppedCount = Math.max(0, account.totalCodespaceCount - account.activeCodespaceCount);
+  if (stoppedCount > 0) {
+    return { label: 'Storage cost', className: 'warning' };
+  }
+
+  if (proxyAccountId === account.id) {
+    return { label: 'In use', className: 'success' };
+  }
+
+  return null;
+}
+
+function buildAccountCostWarning(accounts: GitHubAccount[], proxyAccountId: string | null) {
+  const totalCodespaces = accounts.reduce((sum, account) => sum + account.totalCodespaceCount, 0);
+  if (totalCodespaces === 0) {
+    return null;
+  }
+
+  const activeCodespaces = accounts.reduce((sum, account) => sum + account.activeCodespaceCount, 0);
+  const activeInUse = accounts.some((account) => account.id === proxyAccountId && account.activeCodespaceCount > 0) ? 1 : 0;
+  const extraActive = Math.max(0, activeCodespaces - activeInUse);
+  const stoppedCodespaces = Math.max(0, totalCodespaces - activeCodespaces);
+  const parts: string[] = [];
+  if (extraActive > 0) {
+    parts.push(`${extraActive} extra active ${pluralize('Codespace', extraActive)}`);
+  }
+
+  if (stoppedCodespaces > 0) {
+    parts.push(`${stoppedCodespaces} stopped ${pluralize('Codespace', stoppedCodespaces)} with storage cost`);
+  }
+
+  if (parts.length === 0 && !proxyAccountId) {
+    parts.push(`${activeCodespaces} active ${pluralize('Codespace', activeCodespaces)} not attached to the proxy`);
+  }
+
+  return parts.length === 0
+    ? null
+    : `Cost warning: ${parts.join(' and ')}. Automation stops extra active proxy Codespaces and deletes stopped proxy Codespaces when storage quota is limited.`;
+}
+
+function pluralize(value: string, count: number) {
+  return count === 1 ? value : `${value}s`;
 }
 
 function badgeClass(value: string | number | null | undefined) {
