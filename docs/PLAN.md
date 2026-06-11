@@ -2,7 +2,7 @@
 
 ## Summary
 
-The active workflow manages GitHub username/PAT records and runs a proxy through one automatically selected GitHub Codespace. The local gateway keeps one mixed HTTP/SOCKS port bound. The first proxy request reuses an existing configured `wproxy97/proxy2` Codespace when possible, preferring active Codespaces before stopped Codespaces, and creates a new Codespace only when no reusable proxy Codespace exists. It then starts or attaches to that Codespace, opens a tunnel from remote `127.0.0.1:8899` to a hidden local port, starts Xray through that tunnel, and serves the request.
+The active workflow manages GitHub username/PAT records and runs a proxy through one automatically selected GitHub Codespace. The local gateway keeps one mixed HTTP/SOCKS port bound. The first proxy request reuses an existing configured `wproxy97/proxy2` Codespace when possible, preferring active Codespaces before stopped Codespaces, and creates a new Codespace only when no reusable proxy Codespace exists. It then starts or attaches to that Codespace, opens an OpenSSH dynamic SOCKS tunnel on a hidden local port, starts Xray through that tunnel, and serves the request.
 
 ## Milestones
 

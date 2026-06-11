@@ -41,6 +41,25 @@ public sealed class LocalProxyRuntimeServiceTests
     }
 
     [Fact]
+    public void XrayConfigRenderer_AddsSocksCodespaceOutbound()
+    {
+        var config = new XrayConfigRenderer().Render(new XrayConfigRequest(
+            "127.0.0.1",
+            19001,
+            19002,
+            "/tmp/access.log",
+            "/tmp/error.log",
+            null,
+            null,
+            new XrayOutboundProxy("socks", "127.0.0.1", 19099)));
+
+        using var document = JsonDocument.Parse(config);
+        var outbound = document.RootElement.GetProperty("outbounds")[0];
+        Assert.Equal("socks", outbound.GetProperty("protocol").GetString());
+        Assert.Equal(19099, outbound.GetProperty("settings").GetProperty("servers")[0].GetProperty("port").GetInt32());
+    }
+
+    [Fact]
     public async Task StartAsync_ReturnsFailureWhenHttpPortIsUnavailable()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
@@ -544,6 +563,38 @@ public sealed class LocalProxyRuntimeServiceTests
         var host = LocalProxyRuntimeService.TryGetFirstSshConfigHost(config);
 
         Assert.Null(host);
+    }
+
+    [Fact]
+    public void BuildNativeSshDynamicForwardArguments_UsesDynamicForwardWithoutRemoteProxyPort()
+    {
+        var arguments = LocalProxyRuntimeService.BuildNativeSshDynamicForwardArguments(
+            "/tmp/codespace-ssh-config",
+            39001,
+            "codespace-host");
+
+        Assert.Contains("-D", arguments);
+        Assert.Contains("127.0.0.1:39001", arguments);
+        Assert.DoesNotContain("-L", arguments);
+        Assert.DoesNotContain(arguments, argument => argument.Contains("8899", StringComparison.Ordinal));
+        Assert.Equal("codespace-host", arguments[^1]);
+    }
+
+    [Theory]
+    [InlineData("native-ssh")]
+    [InlineData("ssh")]
+    public void ShouldEnsureCodespaceRemoteProxy_ReturnsFalseForNativeDynamicSocks(string mode)
+    {
+        Assert.False(LocalProxyRuntimeService.ShouldEnsureCodespaceRemoteProxy(mode, configured: true));
+    }
+
+    [Theory]
+    [InlineData("ports-forward")]
+    [InlineData("ssh-direct")]
+    public void ShouldEnsureCodespaceRemoteProxy_PreservesLegacyModeConfiguration(string mode)
+    {
+        Assert.True(LocalProxyRuntimeService.ShouldEnsureCodespaceRemoteProxy(mode, configured: true));
+        Assert.False(LocalProxyRuntimeService.ShouldEnsureCodespaceRemoteProxy(mode, configured: false));
     }
 
     [Fact]

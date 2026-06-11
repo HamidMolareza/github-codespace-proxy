@@ -711,6 +711,7 @@ public sealed class LocalProxyRuntimeService(
             var internalHttpPort = GetFreePort();
             var internalSocksPort = GetFreePort();
             int? tunnelPort = codespace is null ? null : GetFreePort();
+            string? tunnelProtocol = null;
             Process? tunnelProcess = null;
             SshDirectTcpBridge? sshDirectBridge = null;
             MixedProxyListener? mixedListener = null;
@@ -722,6 +723,7 @@ public sealed class LocalProxyRuntimeService(
                 {
                     SetAutomationStatus("Connecting", codespace.AccountId, codespace.Username, codespace.CodespaceName, _automationStatus.Warning, null);
                     var tunnel = await StartCodespaceTunnelAsync(codespace, session.Id, tunnelPort.Value, cancellationToken);
+                    tunnelProtocol = tunnel.XrayOutboundProtocol;
                     tunnelProcess = tunnel.Process;
                     sshDirectBridge = tunnel.SshDirectBridge;
                 }
@@ -734,7 +736,9 @@ public sealed class LocalProxyRuntimeService(
                 var configPath = Path.Combine(runtimeDirectory, "config.json");
                 var accessLogPath = Path.Combine(runtimeDirectory, "access.log");
                 var errorLogPath = Path.Combine(runtimeDirectory, "error.log");
-                var upstream = tunnelPort is null ? null : new XrayOutboundProxy("http", "127.0.0.1", tunnelPort.Value);
+                var upstream = tunnelPort is null
+                    ? null
+                    : new XrayOutboundProxy(tunnelProtocol ?? "http", "127.0.0.1", tunnelPort.Value);
                 var config = configRenderer.Render(new XrayConfigRequest(
                     "127.0.0.1",
                     internalHttpPort,
@@ -1474,20 +1478,23 @@ public sealed class LocalProxyRuntimeService(
                 cancellationToken);
         }
 
-        if (_options.CodespaceEnsureRemoteProxy)
+        if (ShouldEnsureCodespaceRemoteProxy(_options.CodespaceTunnelMode, _options.CodespaceEnsureRemoteProxy))
         {
             SetAutomationStatus("EnsuringRemoteProxy", launch.AccountId, launch.Username, launch.CodespaceName, GetAutomationStatus().Warning, null);
             await EnsureCodespaceRemoteProxyAsync(launch, sessionId, cancellationToken);
         }
         else
         {
+            var nativeSshTunnel = UseNativeSshTunnel();
             await events.WriteAsync(new OperationalEventWrite(
                 "codespace_proxy.remote_proxy.ensure.skipped",
                 OperationalEventSeverity.Information,
-                "Skipped remote proxy ensure step; using gh codespace ports forward like sp-proxy.",
+                nativeSshTunnel
+                    ? "Remote proxy is not required for the native SSH dynamic SOCKS tunnel."
+                    : "Skipped remote proxy ensure step; using the configured legacy tunnel mode.",
                 NodeId: launch.AccountId,
                 SessionId: sessionId,
-                Details: new { launch.CodespaceName, launch.RemoteProxyPort }),
+                Details: new { launch.CodespaceName, launch.RemoteProxyPort, _options.CodespaceTunnelMode }),
                 cancellationToken);
         }
 
@@ -1529,7 +1536,7 @@ public sealed class LocalProxyRuntimeService(
             localTunnelPort,
             "gh codespace ports forward",
             cancellationToken);
-        return new CodespaceTunnelHandle(process, null);
+        return new CodespaceTunnelHandle(process, null, "http");
     }
 
     private async Task<CodespaceTunnelHandle> StartNativeSshTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
@@ -1539,25 +1546,8 @@ public sealed class LocalProxyRuntimeService(
 
         var command = new CommandSpec(
             "ssh",
-            [
-                "-F",
-                configPath,
-                "-N",
-                "-L",
-                $"127.0.0.1:{localTunnelPort}:127.0.0.1:{launch.RemoteProxyPort}",
-                "-o",
-                "ExitOnForwardFailure=yes",
-                "-o",
-                "ServerAliveInterval=10",
-                "-o",
-                "ServerAliveCountMax=3",
-                "-o",
-                "TCPKeepAlive=yes",
-                "-o",
-                "BatchMode=yes",
-                host
-            ],
-            Kind: "codespace.ssh.forward",
+            BuildNativeSshDynamicForwardArguments(configPath, localTunnelPort, host),
+            Kind: "codespace.ssh.dynamic-forward",
             NodeId: launch.AccountId,
             SessionId: sessionId,
             EnvironmentVariables: DirectNetworkEnvironment.CreateGitHubCommandEnvironment(launch.Token));
@@ -1567,9 +1557,9 @@ public sealed class LocalProxyRuntimeService(
             launch,
             sessionId,
             localTunnelPort,
-            "native ssh -L",
+            "native ssh dynamic SOCKS",
             cancellationToken);
-        return new CodespaceTunnelHandle(process, null);
+        return new CodespaceTunnelHandle(process, null, "socks");
     }
 
     private async Task<CodespaceTunnelHandle> StartSshDirectBridgeTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
@@ -1597,7 +1587,7 @@ public sealed class LocalProxyRuntimeService(
                 SessionId: sessionId,
                 Details: new { launch.CodespaceName, LocalTunnelPort = localTunnelPort, launch.RemoteProxyPort, TunnelKind = "ssh -W bridge" }),
                 cancellationToken);
-            return new CodespaceTunnelHandle(null, bridge);
+            return new CodespaceTunnelHandle(null, bridge, "http");
         }
         catch
         {
@@ -1792,8 +1782,34 @@ public sealed class LocalProxyRuntimeService(
         string.Equals(_options.CodespaceTunnelMode, "direct-ssh", StringComparison.OrdinalIgnoreCase);
 
     private bool UseNativeSshTunnel() =>
-        string.Equals(_options.CodespaceTunnelMode, "native-ssh", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(_options.CodespaceTunnelMode, "ssh", StringComparison.OrdinalIgnoreCase);
+        IsNativeSshTunnelMode(_options.CodespaceTunnelMode);
+
+    internal static bool IsNativeSshTunnelMode(string? mode) =>
+        string.Equals(mode, "native-ssh", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(mode, "ssh", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool ShouldEnsureCodespaceRemoteProxy(string? mode, bool configured) =>
+        configured && !IsNativeSshTunnelMode(mode);
+
+    internal static IReadOnlyList<string> BuildNativeSshDynamicForwardArguments(string configPath, int localTunnelPort, string host) =>
+    [
+        "-F",
+        configPath,
+        "-N",
+        "-D",
+        $"127.0.0.1:{localTunnelPort}",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=10",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "TCPKeepAlive=yes",
+        "-o",
+        "BatchMode=yes",
+        host
+    ];
 
     internal static string? TryGetFirstSshConfigHost(string config)
     {
@@ -2517,7 +2533,7 @@ public sealed class LocalProxyRuntimeService(
         DateTimeOffset WindowExpiresAt,
         string Message);
 
-    private sealed record CodespaceTunnelHandle(Process? Process, SshDirectTcpBridge? SshDirectBridge);
+    private sealed record CodespaceTunnelHandle(Process? Process, SshDirectTcpBridge? SshDirectBridge, string XrayOutboundProtocol);
 }
 
 public sealed record LocalProxyRuntimeState(
