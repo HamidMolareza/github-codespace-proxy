@@ -14,6 +14,7 @@ The active workflow manages GitHub username/PAT records and runs a proxy through
 6. Keep only one local proxy settings profile and one active Codespace-backed runtime.
 7. Stop extra running app-managed proxy Codespaces during selection, delete stopped app-managed proxy Codespaces when storage quota is limited, and stop the backing Codespace after proxy idle timeout.
 8. Show proxy active/off statistics from app-managed sessions, with GitHub state samples only from existing sync and lifecycle calls.
+9. Show aggregate compute quota runway from all added Free/Pro accounts, GitHub billing reset date, and recent app-managed proxy usage.
 
 ## Acceptance Criteria
 
@@ -26,4 +27,5 @@ The active workflow manages GitHub username/PAT records and runs a proxy through
 - Limited accounts block create/start behavior through backend validation.
 - Activity shows GitHub, tunnel, Xray, probe, and idle-stop events with redaction.
 - Statistics shows 24-hour hourly and 7/30-day daily proxy activity, plus warnings when GitHub active samples do not match app-managed proxy activity.
+- Codespaces shows an aggregate quota forecast with remaining compute, reset date, estimated daily compute, and estimated usable days until reset.
 - Large binary downloads are documented as a known limitation for Codespaces-backed proxy mode; domains that can use direct VPS egress should not be forced through the Codespaces tunnel for bulk transfer.

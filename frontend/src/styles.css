@@ -326,6 +326,93 @@ button[type="submit"],
   background: #a13a32;
 }
 
+.forecast-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d8e1ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.forecast-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.compact-title {
+  margin-bottom: 6px;
+}
+
+.compact-title .badge {
+  margin-left: auto;
+}
+
+.forecast-main strong {
+  display: block;
+  color: #1f2937;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.forecast-main p {
+  margin: 4px 0 0;
+  color: #667085;
+}
+
+.forecast-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.forecast-metrics span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e6ecf4;
+  border-radius: 6px;
+  background: #fbfcfe;
+  color: #667085;
+  font-size: 12px;
+}
+
+.forecast-metrics strong {
+  color: #1f2937;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.forecast-warnings {
+  display: grid;
+  gap: 6px;
+  color: #8a5a0a;
+  font-size: 13px;
+}
+
+.forecast-warnings span {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.forecast-warnings svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.forecast-card.status-warning {
+  border-color: #efd18c;
+}
+
+.forecast-card.status-limited,
+.forecast-card.status-unavailable {
+  border-color: #f0a6a2;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: minmax(340px, 440px) minmax(0, 1fr);
@@ -1141,6 +1228,7 @@ html[data-theme="dark"] .status-tile,
 html[data-theme="dark"] .editor,
 html[data-theme="dark"] .node-list,
 html[data-theme="dark"] .dashboard-list,
+html[data-theme="dark"] .forecast-card,
 html[data-theme="dark"] .active-strip,
 html[data-theme="dark"] .diagnostic-strip,
 html[data-theme="dark"] .activity-filters,
@@ -1154,6 +1242,7 @@ html[data-theme="dark"] .theme-switch {
 }
 
 html[data-theme="dark"] .quota-card,
+html[data-theme="dark"] .forecast-metrics span,
 html[data-theme="dark"] .node-card,
 html[data-theme="dark"] .account-row,
 html[data-theme="dark"] .diagnostic-item,
@@ -1212,7 +1301,9 @@ html[data-theme="dark"] .status-tile-error strong {
 }
 
 html[data-theme="dark"] .quota-values span,
-html[data-theme="dark"] .quota-card-title span {
+html[data-theme="dark"] .quota-card-title span,
+html[data-theme="dark"] .forecast-main p,
+html[data-theme="dark"] .forecast-metrics span {
   color: #aaa397;
 }
 
@@ -1222,6 +1313,8 @@ html[data-theme="dark"] .stats-session-header {
 }
 
 html[data-theme="dark"] .quota-values strong,
+html[data-theme="dark"] .forecast-main strong,
+html[data-theme="dark"] .forecast-metrics strong,
 html[data-theme="dark"] .event-row {
   color: #eee8dd;
 }
@@ -1389,6 +1482,7 @@ html[data-theme="dark"] .event-detail {
   .activity-summary,
   .activity-filters,
   .quota-summary,
+  .forecast-metrics,
   .stats-grid,
   .content-grid {
     grid-template-columns: 1fr;

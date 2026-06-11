@@ -47,6 +47,9 @@ public sealed class GitHubApiClientTests
         Assert.Equal(GitHubAccountQuotaState.Healthy, usage.State);
         Assert.Equal(20.3876m, usage.Quantity);
         Assert.Equal("hours", usage.UnitType);
+        Assert.Equal(2026, usage.BillingPeriodYear);
+        Assert.Equal(5, usage.BillingPeriodMonth);
+        Assert.Equal(new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero), usage.ResetAt);
         var compute = Assert.Single(usage.Quotas, x => x.Name == "Compute");
         Assert.Equal(40.7616m, compute.Used);
         Assert.Equal("included units", compute.Unit);

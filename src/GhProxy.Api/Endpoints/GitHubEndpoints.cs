@@ -97,6 +97,9 @@ public static class GitHubEndpoints
             return Results.Ok(new GitHubAccountStatusCheckResponse(nextAccounts, results));
         });
 
+        accounts.MapGet("/usage-forecast", async (GitHubUsageForecastService forecast, CancellationToken ct) =>
+            Results.Ok(await forecast.GetAsync(ct)));
+
         accounts.MapGet("/{id:guid}/usage", async (Guid id, GitHubCodespaceService service, CancellationToken ct) =>
             Results.Ok(await service.GetUsageAsync(id, ct)));
 

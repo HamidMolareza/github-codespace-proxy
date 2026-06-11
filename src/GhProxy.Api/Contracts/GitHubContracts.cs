@@ -64,7 +64,10 @@ public sealed record GitHubUsageResponse(
     string? UnitType,
     decimal? NetAmount,
     string BillingUrl,
-    IReadOnlyList<GitHubUsageQuotaSummaryResponse> Quotas);
+    IReadOnlyList<GitHubUsageQuotaSummaryResponse> Quotas,
+    int? BillingPeriodYear = null,
+    int? BillingPeriodMonth = null,
+    DateTimeOffset? ResetAt = null);
 
 public sealed record GitHubUsageQuotaSummaryResponse(
     string Name,
@@ -73,6 +76,26 @@ public sealed record GitHubUsageQuotaSummaryResponse(
     decimal? Remaining,
     decimal? PercentUsed,
     string Unit);
+
+public sealed record GitHubUsageForecastResponse(
+    DateTimeOffset GeneratedAt,
+    DateTimeOffset? ResetAt,
+    int DaysUntilReset,
+    decimal TotalComputeUsed,
+    decimal TotalComputeLimit,
+    decimal TotalComputeRemaining,
+    decimal Average7DayComputeUsage,
+    decimal Average14DayComputeUsage,
+    decimal Average30DayComputeUsage,
+    decimal EstimatedDailyComputeUsage,
+    decimal? EstimatedQuotaDays,
+    int? EstimatedUsableDays,
+    string Status,
+    string Message,
+    int IncludedAccountCount,
+    int UnavailableAccountCount,
+    decimal DefaultMachineCoreCount,
+    IReadOnlyList<string> Warnings);
 
 public sealed record GitHubCodespaceExportResponse(
     string? Id,

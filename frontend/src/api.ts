@@ -9,6 +9,7 @@ import type {
   GitHubAccountStatusCheck,
   GitHubLifecycleResult,
   GitHubUsage,
+  GitHubUsageForecast,
   LocalProxyProfile,
   LocalProxyProfileForm,
   LocalProxyAutomationStatus,
@@ -117,6 +118,7 @@ export const api = {
       method: 'POST'
     }),
   usage: (id: string) => request<GitHubUsage>(`/api/github/accounts/${id}/usage`),
+  usageForecast: () => request<GitHubUsageForecast>('/api/github/accounts/usage-forecast'),
   codespaces: (id: string) => request<CodespaceSnapshot[]>(`/api/github/accounts/${id}/codespaces`),
   codespace: (id: string, name: string) =>
     request<CodespaceSnapshot>(`/api/github/accounts/${id}/codespaces/${encodeURIComponent(name)}`),

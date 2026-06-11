@@ -8,6 +8,7 @@ It is built as an ASP.NET Core API with a React/Vite frontend. The backend manag
 
 - Manage multiple GitHub accounts and encrypted personal access tokens.
 - Validate accounts, sync Codespaces, and show quota/usage information when GitHub exposes it.
+- Estimate aggregate compute runway across all added accounts from remaining quota, reset date, and recent local proxy usage.
 - Create, start, stop, export, delete, and refresh Codespaces from the panel.
 - Keep one local proxy endpoint available on `127.0.0.1:8910` for HTTP and SOCKS5.
 - Start the best available Codespace automatically when real proxy traffic arrives.
@@ -128,6 +129,14 @@ Statistics use app-managed local proxy sessions as the source of truth:
 - Black: idle/off time.
 - Red: error or retry downtime.
 - Gray: chart background/default track.
+
+The Codespaces tab also shows an aggregate quota forecast:
+
+```text
+GET /api/github/accounts/usage-forecast
+```
+
+The forecast sums remaining Codespaces compute quota across added accounts with known Free/Pro limits, uses GitHub's billing period reset when available, and estimates daily compute usage from recent app-managed proxy sessions. The model weights the last 7, 14, and 30 days with more priority on recent days and adds a small volatility buffer. It is informational only; normal create/start blocking still comes from each account's live quota state.
 
 The Codespace Proxy tab also shows latest user proxy requests. Request history stores only protocol, host, port, outcome, duration, and session/Codespace context. It does not store URL paths, query strings, headers, bodies, credentials, or internal dashboard/API/probe requests.
 

@@ -37,6 +37,7 @@ import type {
   GitHubAccountForm,
   GitHubLifecycleResult,
   GitHubUsage,
+  GitHubUsageForecast,
   LocalProxyAutomationStatus,
   LocalProxyProfile,
   LocalProxySettingsForm,
@@ -97,6 +98,7 @@ export default function App() {
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [codespaces, setCodespaces] = useState<CodespaceSnapshot[]>([]);
   const [usage, setUsage] = useState<GitHubUsage | null>(null);
+  const [usageForecast, setUsageForecast] = useState<GitHubUsageForecast | null>(null);
   const [profiles, setProfiles] = useState<LocalProxyProfile[]>([]);
   const [localSession, setLocalSession] = useState<LocalProxySession | null>(null);
   const [localStatus, setLocalStatus] = useState<LocalProxyAutomationStatus | null>(null);
@@ -192,10 +194,15 @@ export default function App() {
     setStatistics(nextStatistics);
   }, [statisticsPeriod]);
 
+  const loadUsageForecast = useCallback(async () => {
+    const nextForecast = await api.usageForecast();
+    setUsageForecast(nextForecast);
+  }, []);
+
   const loadAll = useCallback(async () => {
     await loadAccounts();
-    await Promise.all([loadLocalProxy(), loadStatistics(), loadActivity()]);
-  }, [loadAccounts, loadActivity, loadLocalProxy, loadStatistics]);
+    await Promise.all([loadLocalProxy(), loadStatistics(), loadActivity(), loadUsageForecast()]);
+  }, [loadAccounts, loadActivity, loadLocalProxy, loadStatistics, loadUsageForecast]);
 
   useEffect(() => {
     loadAll().catch((error) => setNotice({ kind: 'error', text: errorMessage(error) }));
@@ -233,6 +240,7 @@ export default function App() {
       const accountId = lifecycleAccountId(result) ?? selectedAccountId;
       await loadCodespaces(accountId);
       await loadActivity();
+      await loadUsageForecast().catch(() => undefined);
     } catch (error) {
       setNotice({ kind: 'error', text: errorMessage(error) });
       await loadActivity().catch(() => undefined);
@@ -494,6 +502,7 @@ export default function App() {
           selectedAccount={selectedAccount}
           selectedAccountId={selectedAccountId}
           usage={usage}
+          usageForecast={usageForecast}
           onCancelEditAccount={() => { setEditingAccountId(null); setAccountForm(emptyAccountForm); }}
           onCreateCodespace={createCodespace}
           onDeleteAccount={(id) => runAction('delete-account', () => api.deleteAccount(id))}
@@ -506,6 +515,7 @@ export default function App() {
           onStartCodespace={startCodespace}
           onStopCodespace={stopCodespace}
           onCheckAllAccounts={checkAllAccountStatuses}
+          onRefreshForecast={() => runAction('refresh-usage-forecast', loadUsageForecast)}
           onSyncAccount={(id) => runAction('sync-account', () => api.syncAccount(id))}
           onUpdateAccountField={updateAccountField}
           onUpdateCodespaceField={updateCodespaceField}
@@ -576,6 +586,7 @@ interface CodespacesPanelProps {
   selectedAccount: GitHubAccount | null;
   selectedAccountId: string | null;
   usage: GitHubUsage | null;
+  usageForecast: GitHubUsageForecast | null;
   onCancelEditAccount: () => void;
   onCreateCodespace: (event: FormEvent) => Promise<void>;
   onDeleteAccount: (id: string) => void;
@@ -588,6 +599,7 @@ interface CodespacesPanelProps {
   onStartCodespace: (accountId: string, name: string) => void;
   onStopCodespace: (accountId: string, name: string) => void;
   onCheckAllAccounts: () => void;
+  onRefreshForecast: () => void;
   onSyncAccount: (id: string) => void;
   onUpdateAccountField: <K extends keyof GitHubAccountForm>(field: K, value: GitHubAccountForm[K]) => void;
   onUpdateCodespaceField: <K extends keyof CreateCodespaceForm>(field: K, value: CreateCodespaceForm[K]) => void;
@@ -609,6 +621,7 @@ function CodespacesPanel({
   selectedAccount,
   selectedAccountId,
   usage,
+  usageForecast,
   onCancelEditAccount,
   onCreateCodespace,
   onDeleteAccount,
@@ -621,6 +634,7 @@ function CodespacesPanel({
   onStartCodespace,
   onStopCodespace,
   onCheckAllAccounts,
+  onRefreshForecast,
   onSyncAccount,
   onUpdateAccountField,
   onUpdateCodespaceField,
@@ -717,6 +731,12 @@ function CodespacesPanel({
       </section>
 
       <section className="dashboard-list">
+        <UsageForecastCard
+          busy={busy}
+          forecast={usageForecast}
+          onRefresh={onRefreshForecast}
+        />
+
         <div className="section-title">
           <Github size={20} />
           <h2>Accounts</h2>
@@ -804,6 +824,71 @@ function CodespacesPanel({
         />
       </section>
     </section>
+  );
+}
+
+function UsageForecastCard({ busy, forecast, onRefresh }: { busy: string | null; forecast: GitHubUsageForecast | null; onRefresh: () => void }) {
+  const status = forecast?.status ?? 'Loading';
+  const headline = forecast
+    ? forecast.estimatedUsableDays !== null && forecast.estimatedUsableDays !== undefined
+      ? `Estimated ${forecast.estimatedUsableDays} of ${forecast.daysUntilReset} days until reset`
+      : forecast.message
+    : 'Loading quota forecast';
+
+  return (
+    <article className={`forecast-card status-${badgeClass(status)}`}>
+      <div className="forecast-main">
+        <div>
+          <div className="section-title compact-title">
+            <BarChart3 size={20} />
+            <h2>Quota Forecast</h2>
+            <span className={`badge ${badgeClass(status)}`}>{status}</span>
+          </div>
+          <strong>{headline}</strong>
+          {forecast?.resetAt && <p>Reset {formatDateTime(forecast.resetAt)}</p>}
+          {forecast && !forecast.resetAt && <p>Reset date unavailable.</p>}
+        </div>
+        <button title="Refresh quota forecast" type="button" className="secondary" onClick={onRefresh} disabled={busy !== null}>
+          <RefreshCw size={16} />
+          Refresh
+        </button>
+      </div>
+
+      {forecast ? (
+        <>
+          <div className="forecast-metrics">
+            <span>
+              Remaining compute
+              <strong>{formatComputeUnits(forecast.totalComputeRemaining)} / {formatComputeUnits(forecast.totalComputeLimit)}</strong>
+            </span>
+            <span>
+              Daily estimate
+              <strong>{formatComputeUnits(forecast.estimatedDailyComputeUsage)} / day</strong>
+            </span>
+            <span>
+              7 / 14 / 30 day avg
+              <strong>{formatComputeUnits(forecast.average7DayComputeUsage)} / {formatComputeUnits(forecast.average14DayComputeUsage)} / {formatComputeUnits(forecast.average30DayComputeUsage)}</strong>
+            </span>
+            <span>
+              Accounts included
+              <strong>{forecast.includedAccountCount}</strong>
+            </span>
+          </div>
+          {forecast.warnings.length > 0 && (
+            <div className="forecast-warnings">
+              {forecast.warnings.map((warning) => (
+                <span key={warning}>
+                  <AlertTriangle size={14} />
+                  {warning}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="empty-state">Quota forecast has not loaded yet.</div>
+      )}
+    </article>
   );
 }
 
@@ -1667,6 +1752,10 @@ function requestOutcomeBadge(outcome: string) {
 
 function formatQuotaValue(value: number, unit: string) {
   return `${formatCompactNumber(value)} ${unit}`;
+}
+
+function formatComputeUnits(value: number) {
+  return `${formatCompactNumber(value)} core h`;
 }
 
 function formatCompactNumber(value: number) {

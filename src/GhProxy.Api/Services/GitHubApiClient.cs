@@ -268,7 +268,10 @@ public sealed class GitHubApiClient(
                 unitType,
                 netAmount,
                 $"https://github.com/settings/billing/usage?query=product%3ACodespaces",
-                quotas);
+                quotas,
+                period.Year,
+                period.Month,
+                NextResetAt(period.Year, period.Month));
         }
         catch (GitHubApiException ex) when (ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound)
         {
@@ -522,6 +525,13 @@ public sealed class GitHubApiClient(
         var year = GetInt(period, "year") ?? now.Year;
         var month = GetInt(period, "month") ?? now.Month;
         return month is >= 1 and <= 12 ? (year, month) : (now.Year, now.Month);
+    }
+
+    private static DateTimeOffset NextResetAt(int year, int month)
+    {
+        var resetYear = month == 12 ? year + 1 : year;
+        var resetMonth = month == 12 ? 1 : month + 1;
+        return new DateTimeOffset(resetYear, resetMonth, 1, 0, 0, 0, TimeSpan.Zero);
     }
 
     private static int? GetInt(JsonElement element, string name)

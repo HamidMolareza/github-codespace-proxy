@@ -8,7 +8,7 @@
 - GitHub integration: direct `HttpClient` calls to official GitHub REST API endpoints.
 - Active control plane location: trusted local workstation or Linux host-network Docker Compose stack.
 - Active product mode: multi-account GitHub Codespaces manager with a Codespace-backed Xray proxy.
-- Proxy mode: backend-managed Xray process routed through the selected Codespace. The default tunnel is a long-lived OpenSSH `ssh -N -L` forward; `ports-forward` and per-connection `ssh-direct` are explicit alternatives.
+- Proxy mode: backend-managed Xray process routed through the selected Codespace. The default tunnel is a long-lived OpenSSH `ssh -N -D` dynamic SOCKS forward; `ports-forward` and per-connection `ssh-direct` are explicit alternatives.
 
 ## Local Proxy Boundaries
 
@@ -30,8 +30,9 @@
 - Codespace creation uses `POST /repos/{owner}/{repo}/codespaces`.
 - Codespace start/stop/export/delete use authenticated-user Codespaces endpoints.
 - Billing usage uses `GET /users/{username}/settings/billing/usage/summary?product=Codespaces` when available.
+- Aggregate quota forecast uses `GET /api/github/accounts/usage-forecast`. It sums remaining compute from added accounts with known Free/Pro limits, derives reset time from the GitHub billing period when available, and estimates daily compute use from local app-managed proxy sessions over the last 7/14/30 days.
 
-The app assumes the selected Codespace repository provides the proxy workload. It runs tunnel commands against user-authorized Codespaces and does not rotate accounts to bypass quota. Low or unavailable quota data is informational; accounts marked limited block create/start actions in this app.
+The app assumes the selected Codespace repository provides the proxy workload. It runs tunnel commands against user-authorized Codespaces and does not rotate accounts to bypass quota. Low or unavailable quota data and aggregate forecast data are informational; accounts marked limited block create/start actions in this app.
 
 ## Security
 

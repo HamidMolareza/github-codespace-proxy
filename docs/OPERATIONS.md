@@ -33,6 +33,8 @@ The app uses Codespaces as the proxy backend only for accounts you add and autho
 
 When storage quota is limited, automatic cleanup deletes stopped app-managed `proxy2` Codespaces to remove storage cost. Manual or unrelated repository Codespaces are not deleted automatically. Set `GitHub__AutoDeleteStorageLimitedProxyCodespaces=false` to disable automatic deletion.
 
+The Codespaces tab includes a Quota Forecast card. It sums remaining compute quota across added accounts with known Free/Pro plans, shows the next GitHub billing reset date, and estimates how many whole days remain by weighting recent app-managed proxy usage from the last 7, 14, and 30 days. Accounts with unavailable billing usage or unknown plan limits are listed as warnings and are not counted in the aggregate compute pool. The forecast is informational; per-account limited state still controls create/start blocking.
+
 ## Codespace Proxy Workflow
 
 1. Open `http://127.0.0.1:5173`.
@@ -178,6 +180,7 @@ API check:
 
 ```bash
 curl 'http://127.0.0.1:5080/api/local-proxy/statistics?period=24h'
+curl 'http://127.0.0.1:5080/api/github/accounts/usage-forecast'
 ```
 
 ## Observability

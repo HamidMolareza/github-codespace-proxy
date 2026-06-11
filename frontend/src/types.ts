@@ -255,6 +255,9 @@ export interface GitHubUsage {
   netAmount?: number | null;
   billingUrl: string;
   quotas: GitHubUsageQuotaSummary[];
+  billingPeriodYear?: number | null;
+  billingPeriodMonth?: number | null;
+  resetAt?: string | null;
 }
 
 export interface GitHubUsageQuotaSummary {
@@ -264,6 +267,27 @@ export interface GitHubUsageQuotaSummary {
   remaining?: number | null;
   percentUsed?: number | null;
   unit: string;
+}
+
+export interface GitHubUsageForecast {
+  generatedAt: string;
+  resetAt?: string | null;
+  daysUntilReset: number;
+  totalComputeUsed: number;
+  totalComputeLimit: number;
+  totalComputeRemaining: number;
+  average7DayComputeUsage: number;
+  average14DayComputeUsage: number;
+  average30DayComputeUsage: number;
+  estimatedDailyComputeUsage: number;
+  estimatedQuotaDays?: number | null;
+  estimatedUsableDays?: number | null;
+  status: string;
+  message: string;
+  includedAccountCount: number;
+  unavailableAccountCount: number;
+  defaultMachineCoreCount: number;
+  warnings: string[];
 }
 
 export interface GitHubLifecycleResult {
