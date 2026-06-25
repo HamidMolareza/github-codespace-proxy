@@ -282,6 +282,98 @@ public sealed class CodespaceProxyAutomationServiceTests
         }
     }
 
+    [Fact]
+    public async Task SelectAsync_SkipsLimitedActiveCodespaceAndUsesHealthyProxyRepository()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var now = DateTimeOffset.UtcNow;
+            var limited = CreateAccount("Limited", "limited", now);
+            var healthy = CreateAccount("Healthy", "healthy", now);
+            db.GitHubAccounts.AddRange(limited, healthy);
+            await db.SaveChangesAsync();
+
+            var github = new FakeGitHubApiClient();
+            github.UsageByToken["limited-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Limited, "limited", null, null, null, "billing", []);
+            github.UsageByToken["healthy-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 1, "hours", 0, "billing", []);
+            github.CodespacesByToken["limited-token"] =
+            [
+                new GitHubCodespaceRemote("limited-active", "Available", "limited/proxy2", "2-core", "UsEast", null, "limited", now, now, now)
+            ];
+            github.CodespacesByToken["healthy-token"] =
+            [
+                new GitHubCodespaceRemote("healthy-active", "Available", "healthy/proxy", "2-core", "UsEast", null, "healthy", now.AddHours(-3), now.AddHours(-2), now.AddHours(-1))
+            ];
+
+            var service = CreateService(db, github);
+
+            var result = await service.SelectAsync(CancellationToken.None);
+
+            Assert.True(result.Succeeded);
+            Assert.NotNull(result.Selection);
+            Assert.Equal(healthy.Id, result.Selection.AccountId);
+            Assert.Equal("healthy-active", result.Selection.CodespaceName);
+            Assert.Equal("healthy/proxy", result.Selection.RepositoryFullName);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SelectAsync_ReusesAccountOwnedProxyPrefixRepositoriesOnly()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var now = DateTimeOffset.UtcNow;
+            var proxy = CreateAccount("Proxy", "proxyuser", now);
+            var other = CreateAccount("Other", "other", now);
+            db.GitHubAccounts.AddRange(proxy, other);
+            await db.SaveChangesAsync();
+
+            var github = new FakeGitHubApiClient();
+            github.UsageByToken["proxyuser-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 3, "hours", 0, "billing", []);
+            github.UsageByToken["other-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 1, "hours", 0, "billing", []);
+            github.CodespacesByToken["proxyuser-token"] =
+            [
+                new GitHubCodespaceRemote("proxy1-active", "Available", "proxyuser/proxy1", "2-core", "UsEast", null, "proxyuser", now.AddHours(-3), now.AddHours(-2), now.AddHours(-1)),
+                new GitHubCodespaceRemote("non-owned", "Available", "someone/proxy2", "2-core", "UsEast", null, "proxyuser", now, now, now),
+                new GitHubCodespaceRemote("not-proxy", "Available", "proxyuser/workspace", "2-core", "UsEast", null, "proxyuser", now, now, now)
+            ];
+            github.CodespacesByToken["other-token"] =
+            [
+                new GitHubCodespaceRemote("other-proxy2", "Shutdown", "other/proxy2", "2-core", "UsEast", null, "other", now, now, now)
+            ];
+
+            var service = CreateService(db, github);
+
+            var result = await service.SelectAsync(CancellationToken.None);
+
+            Assert.True(result.Succeeded);
+            Assert.NotNull(result.Selection);
+            Assert.Equal(proxy.Id, result.Selection.AccountId);
+            Assert.Equal("proxy1-active", result.Selection.CodespaceName);
+            Assert.Equal("proxyuser/proxy1", result.Selection.RepositoryFullName);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
     private static GitHubAccount CreateAccount(string displayName, string username, DateTimeOffset now) =>
         new()
         {
@@ -302,8 +394,7 @@ public sealed class CodespaceProxyAutomationServiceTests
             db,
             codespaces,
             events,
-            Options.Create(new GitHubOptions()),
-            Options.Create(new LocalProxyOptions()));
+            Options.Create(new GitHubOptions()));
         return new CodespaceProxyAutomationService(db, codespaces, storageCleanup, github, new PassThroughSecretProtector(), events, Options.Create(new LocalProxyOptions()));
     }
 

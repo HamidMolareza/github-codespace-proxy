@@ -291,18 +291,24 @@ public sealed class LocalProxyRuntimeService(
 
         if (retry is not null)
         {
-            await events.WriteAsync(new OperationalEventWrite(
-                "codespace_proxy.retry.manual",
-                OperationalEventSeverity.Information,
-                "Manual Codespace proxy retry requested.",
-                NodeId: retry.AccountId,
-                Details: new { retry.CodespaceName, retry.Attempt }),
-                cancellationToken);
-            return await StartCodespaceProxyAsync(retry.AccountId, retry.CodespaceName, retry.ProfileId, cancellationToken);
+            if (await CanReplayCodespaceSessionAsync(retry.AccountId, retry.Username, retry.CodespaceName, cancellationToken))
+            {
+                await events.WriteAsync(new OperationalEventWrite(
+                    "codespace_proxy.retry.manual",
+                    OperationalEventSeverity.Information,
+                    "Manual Codespace proxy retry requested.",
+                    NodeId: retry.AccountId,
+                    Details: new { retry.CodespaceName, retry.Attempt }),
+                    cancellationToken);
+                return await StartCodespaceProxyAsync(retry.AccountId, retry.CodespaceName, retry.ProfileId, cancellationToken);
+            }
+
+            ClearRetry();
+            await WriteSkippedSavedRetryAsync(retry.AccountId, retry.CodespaceName, "Saved retry points at a limited account or non-proxy Codespace.", cancellationToken);
         }
 
         var latest = await GetLatestCodespaceSessionAsync(failedOnly: false, cancellationToken);
-        if (latest is not null)
+        if (latest is not null && await CanReplayCodespaceSessionAsync(latest.AccountId, latest.AccountUsername, latest.CodespaceName, cancellationToken))
         {
             await events.WriteAsync(new OperationalEventWrite(
                 "codespace_proxy.retry.manual",
@@ -312,6 +318,11 @@ public sealed class LocalProxyRuntimeService(
                 Details: new { latest.CodespaceName, latest.ProfileId }),
                 cancellationToken);
             return await StartCodespaceProxyAsync(latest.AccountId, latest.CodespaceName, latest.ProfileId, cancellationToken);
+        }
+
+        if (latest is not null)
+        {
+            await WriteSkippedSavedRetryAsync(latest.AccountId, latest.CodespaceName, "Latest saved session points at a limited account or non-proxy Codespace.", cancellationToken);
         }
 
         await events.WriteAsync(new OperationalEventWrite(
@@ -332,7 +343,20 @@ public sealed class LocalProxyRuntimeService(
 
         if (retry is null)
         {
-            await SchedulePersistedFailureRetryAsync(cancellationToken);
+            var savedFailure = await SchedulePersistedFailureRetryAsync(cancellationToken);
+            if (savedFailure is { Found: true, Scheduled: false })
+            {
+                await EnsureAutomaticCodespaceProxyAsync(cancellationToken);
+            }
+
+            return;
+        }
+
+        if (!await CanReplayCodespaceSessionAsync(retry.AccountId, retry.Username, retry.CodespaceName, cancellationToken))
+        {
+            ClearRetry();
+            await WriteSkippedSavedRetryAsync(retry.AccountId, retry.CodespaceName, "Scheduled retry points at a limited account or non-proxy Codespace.", cancellationToken);
+            await EnsureAutomaticCodespaceProxyAsync(cancellationToken);
             return;
         }
 
@@ -346,25 +370,31 @@ public sealed class LocalProxyRuntimeService(
         await StartCodespaceProxyAsync(retry.AccountId, retry.CodespaceName, retry.ProfileId, cancellationToken);
     }
 
-    private async Task SchedulePersistedFailureRetryAsync(CancellationToken cancellationToken)
+    private async Task<PersistedFailureRetryResult> SchedulePersistedFailureRetryAsync(CancellationToken cancellationToken)
     {
         if (_running is { IsStopped: false })
         {
-            return;
+            return new(false, false);
         }
 
         lock (_statusGate)
         {
             if (_retryPlan is not null)
             {
-                return;
+                return new(false, false);
             }
         }
 
         var latest = await GetLatestCodespaceSessionAsync(failedOnly: true, cancellationToken);
         if (latest is null)
         {
-            return;
+            return new(false, false);
+        }
+
+        if (!await CanReplayCodespaceSessionAsync(latest.AccountId, latest.AccountUsername, latest.CodespaceName, cancellationToken))
+        {
+            await WriteSkippedSavedRetryAsync(latest.AccountId, latest.CodespaceName, "Latest failed session points at a limited account or non-proxy Codespace.", cancellationToken);
+            return new(true, false);
         }
 
         ScheduleRetry(
@@ -380,6 +410,7 @@ public sealed class LocalProxyRuntimeService(
             NodeId: latest.AccountId,
             Details: new { latest.ProfileId, latest.CodespaceName, latest.LastError }),
             cancellationToken);
+        return new(true, true);
     }
 
     private async Task<IdleWakeDecision?> RecordIdleWakeRequestIfNeededAsync(CancellationToken cancellationToken)
@@ -714,6 +745,8 @@ public sealed class LocalProxyRuntimeService(
             string? tunnelProtocol = null;
             Process? tunnelProcess = null;
             SshDirectTcpBridge? sshDirectBridge = null;
+            CommandSpec? tunnelReconnectCommand = null;
+            string? tunnelKind = null;
             MixedProxyListener? mixedListener = null;
             XrayProcessHandle? handle = null;
 
@@ -726,6 +759,8 @@ public sealed class LocalProxyRuntimeService(
                     tunnelProtocol = tunnel.XrayOutboundProtocol;
                     tunnelProcess = tunnel.Process;
                     sshDirectBridge = tunnel.SshDirectBridge;
+                    tunnelReconnectCommand = tunnel.ReconnectCommand;
+                    tunnelKind = tunnel.TunnelKind;
                 }
 
                 var password = string.IsNullOrWhiteSpace(profile.ProtectedProxyPassword)
@@ -783,6 +818,8 @@ public sealed class LocalProxyRuntimeService(
                     mixedListener,
                     tunnelProcess,
                     sshDirectBridge,
+                    tunnelReconnectCommand,
+                    tunnelKind,
                     configPath,
                     accessLogPath,
                     errorLogPath,
@@ -1133,46 +1170,183 @@ public sealed class LocalProxyRuntimeService(
 
     private async Task MonitorTunnelAsync(RunningLocalProxy running)
     {
-        var tunnelProcess = running.TunnelProcess;
-        if (tunnelProcess is null)
-        {
-            return;
-        }
-
         try
         {
-            await tunnelProcess.WaitForExitAsync();
-            if (running.IsStopped)
+            while (!running.IsStopped && running.TunnelProcess is { } tunnelProcess)
             {
+                await tunnelProcess.WaitForExitAsync();
+                if (running.IsStopped)
+                {
+                    return;
+                }
+
+                var exitedProcessId = tunnelProcess.Id;
+                var exitCode = tunnelProcess.ExitCode;
+                tunnelProcess.Dispose();
+
+                if (_options.CodespaceReconnectOnTunnelExit &&
+                    running.TunnelReconnectCommand is not null &&
+                    running.LocalTunnelPort is not null &&
+                    await TryReconnectTunnelAsync(running, exitedProcessId, exitCode, CancellationToken.None))
+                {
+                    continue;
+                }
+
+                running.MarkStopped();
+                await SetLastErrorAsync(running, "Codespace SSH tunnel exited unexpectedly.", CancellationToken.None);
+                await PersistStoppedAsync(running, "Codespace SSH tunnel exited unexpectedly.", LocalProxySessionStatus.Error, CancellationToken.None);
+                if (running.MixedListener is not null)
+                {
+                    await running.MixedListener.DisposeAsync();
+                }
+
+                await running.Process.StopAsync();
+                ScheduleRetryIfCodespaceRuntime(running, "Codespace tunnel exited unexpectedly.");
+                if (ReferenceEquals(_running, running))
+                {
+                    _running = null;
+                }
+
+                await events.WriteAsync(new OperationalEventWrite(
+                    "codespace_proxy.tunnel.exited",
+                    OperationalEventSeverity.Error,
+                    "Codespace SSH tunnel exited unexpectedly.",
+                    Details: new { running.ProfileId, running.SessionId, running.CodespaceName, Id = exitedProcessId, ExitCode = exitCode }),
+                    CancellationToken.None);
                 return;
             }
-
-            running.MarkStopped();
-            await SetLastErrorAsync(running, "Codespace SSH tunnel exited unexpectedly.", CancellationToken.None);
-            await PersistStoppedAsync(running, "Codespace SSH tunnel exited unexpectedly.", LocalProxySessionStatus.Error, CancellationToken.None);
-            if (running.MixedListener is not null)
-            {
-                await running.MixedListener.DisposeAsync();
-            }
-
-            await running.Process.StopAsync();
-            ScheduleRetryIfCodespaceRuntime(running, "Codespace tunnel exited unexpectedly.");
-            if (ReferenceEquals(_running, running))
-            {
-                _running = null;
-            }
-
-            await events.WriteAsync(new OperationalEventWrite(
-                "codespace_proxy.tunnel.exited",
-                OperationalEventSeverity.Error,
-                "Codespace SSH tunnel exited unexpectedly.",
-                Details: new { running.ProfileId, running.SessionId, running.CodespaceName, tunnelProcess.Id, tunnelProcess.ExitCode }),
-                CancellationToken.None);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Failed to monitor Codespace SSH tunnel process.");
         }
+    }
+
+    private async Task<bool> TryReconnectTunnelAsync(RunningLocalProxy running, int exitedProcessId, int exitCode, CancellationToken cancellationToken)
+    {
+        SetAutomationStatus("Reconnecting", running.AccountId, running.AccountUsername, running.CodespaceName, GetAutomationStatus().Warning, "Codespace tunnel exited unexpectedly.");
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.tunnel.interrupted",
+            OperationalEventSeverity.Warning,
+            "Codespace SSH tunnel exited; reconnecting without restarting Xray.",
+            NodeId: running.AccountId,
+            SessionId: running.SessionId,
+            Details: new
+            {
+                running.ProfileId,
+                running.CodespaceName,
+                ExitedProcessId = exitedProcessId,
+                ExitCode = exitCode,
+                running.LocalTunnelPort,
+                running.RemoteProxyPort,
+                running.TunnelKind
+            }),
+            cancellationToken);
+
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_options.CodespaceTunnelReadyTimeoutSeconds, 5, 120));
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            Process? process = null;
+            try
+            {
+                process = commandRunner.Start(running.TunnelReconnectCommand!);
+                var stopAt = DateTimeOffset.UtcNow + timeout;
+                while (DateTimeOffset.UtcNow < stopAt)
+                {
+                    if (running.IsStopped)
+                    {
+                        StopProcess(process);
+                        return false;
+                    }
+
+                    if (process.HasExited)
+                    {
+                        lastError = new InvalidOperationException($"{running.TunnelKind ?? "Codespace tunnel"} exited before tunnel port {running.LocalTunnelPort} became ready.");
+                        break;
+                    }
+
+                    if (await CanConnectAsync(running.LocalTunnelPort!.Value, cancellationToken))
+                    {
+                        running.ReplaceTunnelProcess(process);
+                        await SetLastErrorAsync(running, null, cancellationToken);
+                        SetAutomationStatus("Running", running.AccountId, running.AccountUsername, running.CodespaceName, GetAutomationStatus().Warning, null);
+                        await events.WriteAsync(new OperationalEventWrite(
+                            "codespace_proxy.tunnel.reconnected",
+                            OperationalEventSeverity.Information,
+                            "Codespace SSH tunnel reconnected without restarting Xray.",
+                            NodeId: running.AccountId,
+                            SessionId: running.SessionId,
+                            Details: new
+                            {
+                                running.ProfileId,
+                                running.CodespaceName,
+                                LocalTunnelPort = running.LocalTunnelPort,
+                                running.RemoteProxyPort,
+                                process.Id,
+                                Attempt = attempt,
+                                running.TunnelKind
+                            }),
+                            cancellationToken);
+                        return true;
+                    }
+
+                    await Task.Delay(250, cancellationToken);
+                }
+
+                StopProcess(process);
+                process = null;
+                lastError ??= new InvalidOperationException($"Timed out waiting for tunnel port {running.LocalTunnelPort}.");
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or SocketException)
+            {
+                lastError = ex;
+                if (process is not null)
+                {
+                    StopProcess(process);
+                }
+            }
+
+            if (attempt < 3)
+            {
+                await events.WriteAsync(new OperationalEventWrite(
+                    "codespace_proxy.tunnel.reconnect.retry",
+                    OperationalEventSeverity.Warning,
+                    "Codespace SSH tunnel reconnect was not ready; retrying.",
+                    NodeId: running.AccountId,
+                    SessionId: running.SessionId,
+                    StandardError: lastError?.Message,
+                    Details: new
+                    {
+                        running.ProfileId,
+                        running.CodespaceName,
+                        LocalTunnelPort = running.LocalTunnelPort,
+                        running.RemoteProxyPort,
+                        Attempt = attempt,
+                        running.TunnelKind
+                    }),
+                    cancellationToken);
+                await Task.Delay(TimeSpan.FromSeconds(2 * attempt), cancellationToken);
+            }
+        }
+
+        await events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.tunnel.reconnect.failed",
+            OperationalEventSeverity.Error,
+            "Codespace SSH tunnel reconnect failed; falling back to full proxy restart.",
+            NodeId: running.AccountId,
+            SessionId: running.SessionId,
+            StandardError: lastError?.Message,
+            Details: new
+            {
+                running.ProfileId,
+                running.CodespaceName,
+                LocalTunnelPort = running.LocalTunnelPort,
+                running.RemoteProxyPort,
+                running.TunnelKind
+            }),
+            cancellationToken);
+        return false;
     }
 
     private async Task MonitorSshDirectBridgeAsync(RunningLocalProxy running)
@@ -1261,6 +1435,44 @@ public sealed class LocalProxyRuntimeService(
             latest.CodespaceName,
             latest.LastError);
     }
+
+    internal async Task<bool> CanReplayCodespaceSessionAsync(
+        Guid accountId,
+        string? accountUsername,
+        string codespaceName,
+        CancellationToken cancellationToken)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var account = await db.GitHubAccounts
+            .AsNoTracking()
+            .Where(x => x.Id == accountId)
+            .Select(x => new { x.Username, x.QuotaState })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (account is null || account.QuotaState == GitHubAccountQuotaState.Limited)
+        {
+            return false;
+        }
+
+        var username = string.IsNullOrWhiteSpace(accountUsername) ? account.Username : accountUsername;
+        var repositoryFullName = await db.CodespaceSnapshots
+            .AsNoTracking()
+            .Where(x => x.AccountId == accountId)
+            .Where(x => x.Name == codespaceName)
+            .Select(x => x.RepositoryFullName)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return CodespaceProxyRepositoryPolicy.IsProxyRepository(repositoryFullName, username);
+    }
+
+    private Task WriteSkippedSavedRetryAsync(Guid accountId, string codespaceName, string reason, CancellationToken cancellationToken) =>
+        events.WriteAsync(new OperationalEventWrite(
+            "codespace_proxy.retry.saved_session_skipped",
+            OperationalEventSeverity.Warning,
+            reason,
+            NodeId: accountId,
+            Details: new { CodespaceName = codespaceName }),
+            cancellationToken);
 
     private async Task MarkRunningFailedAsync(RunningLocalProxy running, string reason, CancellationToken cancellationToken)
     {
@@ -1536,7 +1748,7 @@ public sealed class LocalProxyRuntimeService(
             localTunnelPort,
             "gh codespace ports forward",
             cancellationToken);
-        return new CodespaceTunnelHandle(process, null, "http");
+        return new CodespaceTunnelHandle(process, null, "http", null, "gh codespace ports forward");
     }
 
     private async Task<CodespaceTunnelHandle> StartNativeSshTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
@@ -1550,7 +1762,7 @@ public sealed class LocalProxyRuntimeService(
             Kind: "codespace.ssh.dynamic-forward",
             NodeId: launch.AccountId,
             SessionId: sessionId,
-            EnvironmentVariables: DirectNetworkEnvironment.CreateGitHubCommandEnvironment(launch.Token));
+            EnvironmentVariables: DirectNetworkEnvironment.CreateNoProxyEnvironment());
 
         var process = await StartTunnelProcessWithRetriesAsync(
             command,
@@ -1559,7 +1771,7 @@ public sealed class LocalProxyRuntimeService(
             localTunnelPort,
             "native ssh dynamic SOCKS",
             cancellationToken);
-        return new CodespaceTunnelHandle(process, null, "socks");
+        return new CodespaceTunnelHandle(process, null, "socks", command, "native ssh dynamic SOCKS");
     }
 
     private async Task<CodespaceTunnelHandle> StartSshDirectBridgeTunnelAsync(CodespaceProxyLaunch launch, Guid sessionId, int localTunnelPort, CancellationToken cancellationToken)
@@ -1587,7 +1799,7 @@ public sealed class LocalProxyRuntimeService(
                 SessionId: sessionId,
                 Details: new { launch.CodespaceName, LocalTunnelPort = localTunnelPort, launch.RemoteProxyPort, TunnelKind = "ssh -W bridge" }),
                 cancellationToken);
-            return new CodespaceTunnelHandle(null, bridge, "http");
+            return new CodespaceTunnelHandle(null, bridge, "http", null, "ssh -W bridge");
         }
         catch
         {
@@ -1798,6 +2010,10 @@ public sealed class LocalProxyRuntimeService(
         "-N",
         "-D",
         $"127.0.0.1:{localTunnelPort}",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
         "-o",
         "ExitOnForwardFailure=yes",
         "-o",
@@ -2461,6 +2677,8 @@ public sealed class LocalProxyRuntimeService(
         MixedProxyListener? mixedListener,
         Process? tunnelProcess,
         SshDirectTcpBridge? sshDirectBridge,
+        CommandSpec? tunnelReconnectCommand,
+        string? tunnelKind,
         string configPath,
         string accessLogPath,
         string errorLogPath,
@@ -2471,6 +2689,7 @@ public sealed class LocalProxyRuntimeService(
         int? localTunnelPort)
     {
         private bool _stopped;
+        private Process? _tunnelProcess = tunnelProcess;
 
         public Guid ProfileId { get; } = profileId;
         public string ProfileName { get; } = profileName;
@@ -2487,8 +2706,10 @@ public sealed class LocalProxyRuntimeService(
         public int IdleShutdownMinutes { get; } = idleShutdownMinutes;
         public XrayProcessHandle Process { get; } = process;
         public MixedProxyListener? MixedListener { get; private set; } = mixedListener;
-        public Process? TunnelProcess { get; } = tunnelProcess;
+        public Process? TunnelProcess => _tunnelProcess;
         public SshDirectTcpBridge? SshDirectBridge { get; } = sshDirectBridge;
+        public CommandSpec? TunnelReconnectCommand { get; } = tunnelReconnectCommand;
+        public string? TunnelKind { get; } = tunnelKind;
         public string ConfigPath { get; } = configPath;
         public string AccessLogPath { get; } = accessLogPath;
         public string ErrorLogPath { get; } = errorLogPath;
@@ -2507,6 +2728,11 @@ public sealed class LocalProxyRuntimeService(
         public void AttachMixedListener(MixedProxyListener listener)
         {
             MixedListener = listener;
+        }
+
+        public void ReplaceTunnelProcess(Process process)
+        {
+            _tunnelProcess = process;
         }
 
         public void MarkStopped()
@@ -2533,7 +2759,14 @@ public sealed class LocalProxyRuntimeService(
         DateTimeOffset WindowExpiresAt,
         string Message);
 
-    private sealed record CodespaceTunnelHandle(Process? Process, SshDirectTcpBridge? SshDirectBridge, string XrayOutboundProtocol);
+    private sealed record CodespaceTunnelHandle(
+        Process? Process,
+        SshDirectTcpBridge? SshDirectBridge,
+        string XrayOutboundProtocol,
+        CommandSpec? ReconnectCommand,
+        string? TunnelKind);
+
+    private sealed record PersistedFailureRetryResult(bool Found, bool Scheduled);
 }
 
 public sealed record LocalProxyRuntimeState(

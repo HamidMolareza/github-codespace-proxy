@@ -94,9 +94,9 @@ docker compose down
 
 ## Codespace Proxy Flow
 
-The gateway binds the public proxy port immediately. When user proxy traffic arrives, the backend reuses an existing configured proxy Codespace before creating anything new: active Codespaces first, stopped Codespaces second, and a new Codespace only when no reusable `proxy2` Codespace exists. It then starts or attaches to the selected Codespace, opens a hidden local SOCKS listener through SSH, and routes Xray through that tunnel.
+The gateway binds the public proxy port immediately. When user proxy traffic arrives, the backend reuses an existing account-owned `proxy*` Codespace before creating anything new: active Codespaces first, stopped Codespaces second, and a new Codespace only when no reusable proxy Codespace exists. It then starts or attaches to the selected Codespace, opens a hidden local SOCKS listener through SSH, and routes Xray through that tunnel.
 
-For cost control, selection stops extra active app-managed `proxy2` Codespaces after choosing the backend. If storage quota is limited, the app automatically deletes stopped app-managed `proxy2` Codespaces to remove storage cost. Manual or unrelated repository Codespaces are not deleted automatically.
+For cost control, selection skips limited accounts, stops extra active account-owned `proxy*` Codespaces after choosing the backend, and automatically deletes stopped account-owned `proxy*` Codespaces when storage quota is limited. Manual or unrelated repository Codespaces are not deleted automatically.
 
 The default tunnel mode uses an OpenSSH config from `gh codespace ssh --config`, then runs one long-lived OpenSSH dynamic SOCKS forward:
 
@@ -104,7 +104,7 @@ The default tunnel mode uses an OpenSSH config from `gh codespace ssh --config`,
 ssh -F <generated-config> -N -D 127.0.0.1:<hidden-port> <codespace-host>
 ```
 
-The default mode does not require the `proxy2` process inside the Codespace. Set `LocalProxy__CodespaceTunnelMode=ports-forward` to use `gh codespace ports forward`, or `LocalProxy__CodespaceTunnelMode=ssh-direct` to open one `ssh -W` bridge per local proxy connection; these legacy modes still target the remote proxy port.
+The app reconnects the managed OpenSSH tunnel on the same hidden port when the tunnel process exits, so Xray and the public gateway listener stay in place during short tunnel interruptions. Set `LocalProxy__CodespaceReconnectOnTunnelExit=false` to restore the older full-restart behavior. The default mode does not require the `proxy2` process inside the Codespace. Set `LocalProxy__CodespaceTunnelMode=ports-forward` to use `gh codespace ports forward`, or `LocalProxy__CodespaceTunnelMode=ssh-direct` to open one `ssh -W` bridge per local proxy connection; these legacy modes still target the remote proxy port.
 
 The Codespaces tunnel is a control-plane convenience, not a guaranteed bulk-transfer transport. Large downloads are safest when the calling gateway can route the domain through direct VPS egress. Domains that must stay in `proxy` mode through GitHub Codespaces can still stall or truncate large binary responses even when the local relay code is healthy.
 
@@ -136,7 +136,7 @@ The Codespaces tab also shows an aggregate quota forecast:
 GET /api/github/accounts/usage-forecast
 ```
 
-The forecast sums remaining Codespaces compute quota across added accounts with known Free/Pro limits, uses GitHub's billing period reset when available, and estimates daily compute usage from recent app-managed proxy sessions. The model weights the last 7, 14, and 30 days with more priority on recent days and adds a small volatility buffer. It is informational only; normal create/start blocking still comes from each account's live quota state.
+The forecast sums remaining Codespaces compute quota across added accounts with known Free/Pro limits, uses GitHub's billing period reset when available, and estimates daily compute usage from recent app-managed proxy sessions. If GitHub billing is reachable but returns no Codespaces usage rows for a known Free/Pro account, the account is treated as unused quota. The model weights the last 7, 14, and 30 days with more priority on recent days and adds a small volatility buffer. It is informational only; normal create/start blocking still comes from each account's live quota state.
 
 The Codespace Proxy tab also shows latest user proxy requests. Request history stores only protocol, host, port, outcome, duration, and session/Codespace context. It does not store URL paths, query strings, headers, bodies, credentials, or internal dashboard/API/probe requests.
 

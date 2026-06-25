@@ -91,9 +91,9 @@ public sealed class CodespaceProxyAutomationService(
         var selectedExisting = candidates
             .SelectMany(ToCodespaceCandidates)
             .OrderBy(x => CodespaceRank(x.Codespace.State))
-            .ThenByDescending(x => x.Codespace.LastUsedAt ?? x.Codespace.UpdatedAt ?? x.Codespace.CreatedAt ?? DateTimeOffset.MinValue)
             .ThenBy(x => UsageRank(x.Account.Usage?.State))
             .ThenBy(x => x.Account.Usage?.Quantity ?? decimal.MaxValue)
+            .ThenByDescending(x => x.Codespace.LastUsedAt ?? x.Codespace.UpdatedAt ?? x.Codespace.CreatedAt ?? DateTimeOffset.MinValue)
             .ThenBy(x => x.Account.Account.DisplayName, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
 
@@ -104,11 +104,6 @@ public sealed class CodespaceProxyAutomationService(
         {
             selectedAccount = selectedExisting.Account;
             selectedCodespace = selectedExisting.Codespace;
-            if (IsStoppedState(selectedCodespace.State) &&
-                selectedAccount.Usage?.State == GitHubAccountQuotaState.Limited)
-            {
-                return CodespaceProxySelectionResult.Fail($"Existing Codespace {selectedAccount.Account.Username}/{selectedCodespace.Name} is stopped, but the account quota is limited so it cannot be started.");
-            }
         }
         else
         {
@@ -127,8 +122,7 @@ public sealed class CodespaceProxyAutomationService(
             var token = secrets.Unprotect(selectedAccount.Account.ProtectedPersonalAccessToken);
             await EnsureForkAsync(selectedAccount.Account, token, cancellationToken);
             var snapshots = await codespaces.SyncAsync(selectedAccount.Account.Id, cancellationToken);
-            var repositoryFullName = $"{selectedAccount.Account.Username}/{_options.CodespaceRepositoryName}";
-            var existingAfterFork = PickCodespace(snapshots, repositoryFullName);
+            var existingAfterFork = PickCodespace(snapshots, selectedAccount.Account.Username);
             if (existingAfterFork is not null)
             {
                 selectedCodespace = existingAfterFork;
@@ -150,7 +144,7 @@ public sealed class CodespaceProxyAutomationService(
             }
         }
 
-        var selectedRepositoryFullName = $"{selectedAccount.Account.Username}/{_options.CodespaceRepositoryName}";
+        var selectedRepositoryFullName = selectedCodespace.RepositoryFullName ?? $"{selectedAccount.Account.Username}/{_options.CodespaceRepositoryName}";
         warnings.AddRange(await StopExtraCodespacesAsync(accounts, selectedAccount.Account.Id, selectedCodespace.Name, cancellationToken));
         await events.WriteAsync(new OperationalEventWrite(
             "codespace_proxy.account.selected",
@@ -181,8 +175,8 @@ public sealed class CodespaceProxyAutomationService(
         IEnumerable<CodespaceCandidate> ToCodespaceCandidates(AccountCandidate account) =>
             account.Snapshots
                 .Where(x => IsReusableState(x.State))
-                .Where(x => string.Equals(x.RepositoryFullName, $"{account.Account.Username}/{_options.CodespaceRepositoryName}", StringComparison.OrdinalIgnoreCase))
-                .Where(x => account.Usage?.State != GitHubAccountQuotaState.Limited || IsActiveState(x.State))
+                .Where(x => CodespaceProxyRepositoryPolicy.IsProxyRepository(x.RepositoryFullName, account.Account.Username))
+                .Where(_ => account.Usage?.State != GitHubAccountQuotaState.Limited)
                 .Select(x => new CodespaceCandidate(account, x));
     }
 
@@ -244,10 +238,9 @@ public sealed class CodespaceProxyAutomationService(
                 continue;
             }
 
-            var repositoryFullName = $"{account.Username}/{_options.CodespaceRepositoryName}";
             foreach (var snapshot in snapshots
                          .Where(x => IsActiveState(x.State))
-                         .Where(x => string.Equals(x.RepositoryFullName, repositoryFullName, StringComparison.OrdinalIgnoreCase)))
+                         .Where(x => CodespaceProxyRepositoryPolicy.IsProxyRepository(x.RepositoryFullName, account.Username)))
             {
                 if (account.Id == selectedAccountId &&
                     string.Equals(snapshot.Name, selectedCodespaceName, StringComparison.OrdinalIgnoreCase))
@@ -304,9 +297,9 @@ public sealed class CodespaceProxyAutomationService(
         return false;
     }
 
-    private static CodespaceSnapshot? PickCodespace(IReadOnlyList<CodespaceSnapshot> snapshots, string repositoryFullName) =>
+    private static CodespaceSnapshot? PickCodespace(IReadOnlyList<CodespaceSnapshot> snapshots, string accountUsername) =>
         snapshots
-            .Where(x => string.Equals(x.RepositoryFullName, repositoryFullName, StringComparison.OrdinalIgnoreCase))
+            .Where(x => CodespaceProxyRepositoryPolicy.IsProxyRepository(x.RepositoryFullName, accountUsername))
             .OrderBy(x => IsActiveState(x.State) ? 0 : 1)
             .ThenByDescending(x => x.LastUsedAt ?? x.UpdatedAt ?? x.CreatedAt ?? DateTimeOffset.MinValue)
             .FirstOrDefault();

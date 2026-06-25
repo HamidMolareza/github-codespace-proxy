@@ -41,6 +41,8 @@ public sealed class GitHubUsageForecastService(AppDbContext db, GitHubCodespaceS
                 "Add GitHub accounts to estimate Codespaces quota runway.",
                 0,
                 0,
+                0,
+                0,
                 DefaultMachineCoreCount,
                 []);
         }
@@ -50,6 +52,8 @@ public sealed class GitHubUsageForecastService(AppDbContext db, GitHubCodespaceS
         decimal totalComputeRemaining = 0;
         var includedAccountCount = 0;
         var unavailableAccountCount = 0;
+        var usableAccountCount = 0;
+        var limitedAccountCount = 0;
         DateTimeOffset? resetAt = null;
 
         foreach (var account in accounts)
@@ -97,6 +101,14 @@ public sealed class GitHubUsageForecastService(AppDbContext db, GitHubCodespaceS
             totalComputeUsed += compute.Used;
             totalComputeLimit += compute.Limit.Value;
             totalComputeRemaining += compute.Remaining.Value;
+            if (compute.Remaining.Value > 0)
+            {
+                usableAccountCount++;
+            }
+            else
+            {
+                limitedAccountCount++;
+            }
         }
 
         if (resetAt is null)
@@ -133,9 +145,11 @@ public sealed class GitHubUsageForecastService(AppDbContext db, GitHubCodespaceS
             estimatedQuotaDays is null ? null : Round(estimatedQuotaDays.Value),
             estimatedUsableDays,
             status,
-            BuildMessage(status, estimatedUsableDays, daysUntilReset),
+            BuildMessage(status, estimatedUsableDays, daysUntilReset, usableAccountCount),
             includedAccountCount,
             unavailableAccountCount,
+            usableAccountCount,
+            limitedAccountCount,
             DefaultMachineCoreCount,
             warnings);
     }
@@ -258,15 +272,15 @@ public sealed class GitHubUsageForecastService(AppDbContext db, GitHubCodespaceS
         return estimatedUsableDays >= daysUntilReset ? "Healthy" : "Warning";
     }
 
-    private static string BuildMessage(string status, int? estimatedUsableDays, int daysUntilReset) =>
+    private static string BuildMessage(string status, int? estimatedUsableDays, int daysUntilReset, int usableAccountCount) =>
         status switch
         {
             "NoAccounts" => "Add GitHub accounts to estimate Codespaces quota runway.",
             "Unavailable" => "No accounts with known compute quota are available for forecasting.",
             "Limited" => "Aggregate Codespaces compute quota is exhausted.",
             "NoUsageHistory" => "No recent app-managed Codespaces usage was found; remaining days cannot be estimated yet.",
-            "Healthy" => $"Estimated {estimatedUsableDays} of {daysUntilReset} day(s) until reset.",
-            _ => $"Estimated {estimatedUsableDays} of {daysUntilReset} day(s) until reset."
+            "Healthy" => $"Estimated {estimatedUsableDays} of {daysUntilReset} day(s) until reset across {usableAccountCount} usable account(s).",
+            _ => $"Estimated {estimatedUsableDays} of {daysUntilReset} day(s) until reset across {usableAccountCount} usable account(s)."
         };
 
     private static decimal AverageLast(IReadOnlyList<decimal> values, int days)

@@ -22,7 +22,9 @@ public sealed class CodespaceStorageCleanupServiceTests
             var now = DateTimeOffset.UtcNow;
             var account = await AddAccountAsync(db, now);
             var proxy = AddSnapshot(db, account.Id, "storage-cost", "Shutdown", "octocat/proxy2", now);
+            var proxyOne = AddSnapshot(db, account.Id, "storage-cost-proxy1", "Stopped", "octocat/proxy1", now);
             AddSnapshot(db, account.Id, "manual", "Shutdown", "octocat/manual", now);
+            AddSnapshot(db, account.Id, "foreign", "Shutdown", "someone/proxy2", now);
             AddSnapshot(db, account.Id, "running", "Available", "octocat/proxy2", now);
             await db.SaveChangesAsync();
             var github = new FakeGitHubApiClient();
@@ -30,10 +32,13 @@ public sealed class CodespaceStorageCleanupServiceTests
 
             var result = await service.CleanupAsync(account, StorageLimitedUsage(), [.. db.CodespaceSnapshots], CancellationToken.None);
 
-            Assert.Equal(1, result.DeletedCount);
+            Assert.Equal(2, result.DeletedCount);
             Assert.Contains(("token", proxy.Name), github.DeleteCalls);
+            Assert.Contains(("token", proxyOne.Name), github.DeleteCalls);
             Assert.DoesNotContain(result.Snapshots, x => x.Name == proxy.Name);
+            Assert.DoesNotContain(result.Snapshots, x => x.Name == proxyOne.Name);
             Assert.True(await db.CodespaceSnapshots.AnyAsync(x => x.Name == "manual"));
+            Assert.True(await db.CodespaceSnapshots.AnyAsync(x => x.Name == "foreign"));
             Assert.True(await db.CodespaceSnapshots.AnyAsync(x => x.Name == "running"));
         }
         finally
@@ -244,8 +249,7 @@ public sealed class CodespaceStorageCleanupServiceTests
             db,
             codespaces,
             events,
-            Options.Create(new GitHubOptions { AutoDeleteStorageLimitedProxyCodespaces = autoDelete }),
-            Options.Create(new LocalProxyOptions()));
+            Options.Create(new GitHubOptions { AutoDeleteStorageLimitedProxyCodespaces = autoDelete }));
     }
 
     private static async Task<GitHubAccount> AddAccountAsync(AppDbContext db, DateTimeOffset now)

@@ -51,8 +51,8 @@ public static class LocalProxyEndpoints
                     .OrderByDescending(x => x.StartedAt)
                     .FirstOrDefault()
                 : null;
-            var selectedAccount = runtimeStatus.AccountUsername;
-            var selectedAccountId = activeSession?.AccountId ?? latestSession?.AccountId;
+            var selectedAccountId = GetSelectedAccountId(activeSession, runtimeStatus);
+            var selectedAccount = selectedAccountId == runtimeStatus.AccountId ? runtimeStatus.AccountUsername : null;
             if (selectedAccount is null && selectedAccountId is not null)
             {
                 selectedAccount = await db.GitHubAccounts
@@ -102,7 +102,7 @@ public static class LocalProxyEndpoints
                 phase,
                 selectedAccountId,
                 selectedAccount,
-                runtimeStatus.CodespaceName ?? activeSession?.CodespaceName ?? latestSession?.CodespaceName,
+                runtimeStatus.CodespaceName ?? activeSession?.CodespaceName,
                 warning,
                 runtimeStatus.NextRetryAt,
                 lastError,
@@ -260,6 +260,9 @@ public static class LocalProxyEndpoints
 
         return app;
     }
+
+    internal static Guid? GetSelectedAccountId(LocalProxyRuntimeState? activeSession, LocalProxyAutomationRuntimeStatus runtimeStatus) =>
+        activeSession?.AccountId ?? runtimeStatus.AccountId;
 
     private static LocalProxyProfileResponse ToResponse(LocalProxyProfile profile) =>
         new(

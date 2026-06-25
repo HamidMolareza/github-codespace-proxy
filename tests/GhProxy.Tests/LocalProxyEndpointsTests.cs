@@ -1,5 +1,6 @@
 using GhProxy.Api.Endpoints;
 using GhProxy.Api.Domain;
+using GhProxy.Api.Services;
 
 namespace GhProxy.Tests;
 
@@ -53,5 +54,34 @@ public sealed class LocalProxyEndpointsTests
         Assert.Equal(20, latest.Count);
         Assert.Equal("host-24.test", latest[0].TargetHost);
         Assert.Equal("host-5.test", latest[^1].TargetHost);
+    }
+
+    [Fact]
+    public void GetSelectedAccountId_DoesNotUseHistoricalSessionWhenRuntimeIsSelecting()
+    {
+        var historicalAccountId = Guid.NewGuid();
+        var latestSession = new LocalProxySession
+        {
+            AccountId = historicalAccountId,
+            CodespaceName = "old-space",
+            Status = LocalProxySessionStatus.Error
+        };
+        var runtimeStatus = new LocalProxyAutomationRuntimeStatus("SelectingAccount", null, null, null, null, null, null);
+
+        var selectedAccountId = LocalProxyEndpoints.GetSelectedAccountId(null, runtimeStatus);
+
+        Assert.Null(selectedAccountId);
+        Assert.Equal(historicalAccountId, latestSession.AccountId);
+    }
+
+    [Fact]
+    public void GetSelectedAccountId_UsesRuntimeAccountWhenStartupSelectedAccount()
+    {
+        var accountId = Guid.NewGuid();
+        var runtimeStatus = new LocalProxyAutomationRuntimeStatus("StartingCodespace", accountId, "octocat", "space", null, null, null);
+
+        var selectedAccountId = LocalProxyEndpoints.GetSelectedAccountId(null, runtimeStatus);
+
+        Assert.Equal(accountId, selectedAccountId);
     }
 }

@@ -829,11 +829,7 @@ function CodespacesPanel({
 
 function UsageForecastCard({ busy, forecast, onRefresh }: { busy: string | null; forecast: GitHubUsageForecast | null; onRefresh: () => void }) {
   const status = forecast?.status ?? 'Loading';
-  const headline = forecast
-    ? forecast.estimatedUsableDays !== null && forecast.estimatedUsableDays !== undefined
-      ? `Estimated ${forecast.estimatedUsableDays} of ${forecast.daysUntilReset} days until reset`
-      : forecast.message
-    : 'Loading quota forecast';
+  const headline = forecast ? forecast.message : 'Loading quota forecast';
 
   return (
     <article className={`forecast-card status-${badgeClass(status)}`}>
@@ -870,8 +866,8 @@ function UsageForecastCard({ busy, forecast, onRefresh }: { busy: string | null;
               <strong>{formatComputeUnits(forecast.average7DayComputeUsage)} / {formatComputeUnits(forecast.average14DayComputeUsage)} / {formatComputeUnits(forecast.average30DayComputeUsage)}</strong>
             </span>
             <span>
-              Accounts included
-              <strong>{forecast.includedAccountCount}</strong>
+              Usable accounts
+              <strong>{forecast.usableAccountCount} / {forecast.includedAccountCount}</strong>
             </span>
           </div>
           {forecast.warnings.length > 0 && (

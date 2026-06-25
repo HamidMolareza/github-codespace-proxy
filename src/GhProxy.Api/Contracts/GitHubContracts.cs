@@ -94,6 +94,8 @@ public sealed record GitHubUsageForecastResponse(
     string Message,
     int IncludedAccountCount,
     int UnavailableAccountCount,
+    int UsableAccountCount,
+    int LimitedAccountCount,
     decimal DefaultMachineCoreCount,
     IReadOnlyList<string> Warnings);
 

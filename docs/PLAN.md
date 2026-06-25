@@ -2,7 +2,7 @@
 
 ## Summary
 
-The active workflow manages GitHub username/PAT records and runs a proxy through one automatically selected GitHub Codespace. The local gateway keeps one mixed HTTP/SOCKS port bound. The first proxy request reuses an existing configured `wproxy97/proxy2` Codespace when possible, preferring active Codespaces before stopped Codespaces, and creates a new Codespace only when no reusable proxy Codespace exists. It then starts or attaches to that Codespace, opens an OpenSSH dynamic SOCKS tunnel on a hidden local port, starts Xray through that tunnel, and serves the request.
+The active workflow manages GitHub username/PAT records and runs a proxy through one automatically selected GitHub Codespace. The local gateway keeps one mixed HTTP/SOCKS port bound. The first proxy request reuses an existing account-owned `proxy*` Codespace when possible, preferring active Codespaces before stopped Codespaces, and creates a new Codespace only when no reusable proxy Codespace exists. It then starts or attaches to that Codespace, opens an OpenSSH dynamic SOCKS tunnel on a hidden local port, starts Xray through that tunnel, and serves the request.
 
 ## Milestones
 
@@ -21,8 +21,8 @@ The active workflow manages GitHub username/PAT records and runs a proxy through
 - A user can add, edit, view, and delete GitHub account records.
 - A user can validate a PAT and sync Codespaces for that account.
 - A user can send traffic to `http://127.0.0.1:8910` or `socks5h://127.0.0.1:8910` and have the app start the best available Codespace backend automatically.
-- Automatic startup reuses active or stopped app-managed proxy Codespaces before creating a new Codespace.
-- Stopped app-managed proxy Codespaces are deleted automatically when storage quota is limited.
+- Automatic startup reuses active or stopped account-owned `proxy*` Codespaces before creating a new Codespace.
+- Stopped account-owned `proxy*` Codespaces are deleted automatically when storage quota is limited.
 - GitHub `409 Conflict` during start is treated as a refreshable lifecycle state instead of an unhandled exception.
 - Limited accounts block create/start behavior through backend validation.
 - Activity shows GitHub, tunnel, Xray, probe, and idle-stop events with redaction.

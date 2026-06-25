@@ -10,11 +10,9 @@ public sealed class CodespaceStorageCleanupService(
     AppDbContext db,
     GitHubCodespaceService codespaces,
     IOperationalEventSink events,
-    IOptions<GitHubOptions> githubOptions,
-    IOptions<LocalProxyOptions> localProxyOptions)
+    IOptions<GitHubOptions> githubOptions)
 {
     private readonly GitHubOptions _githubOptions = githubOptions.Value;
-    private readonly LocalProxyOptions _localProxyOptions = localProxyOptions.Value;
 
     public async Task<CodespaceStorageCleanupResult> CleanupAsync(
         GitHubAccount account,
@@ -29,7 +27,6 @@ public sealed class CodespaceStorageCleanupService(
             return new CodespaceStorageCleanupResult(snapshots, [], 0);
         }
 
-        var repositoryFullName = $"{account.Username}/{_localProxyOptions.CodespaceRepositoryName}";
         var runningNames = await db.LocalProxySessions
             .AsNoTracking()
             .Where(x => x.AccountId == account.Id)
@@ -77,7 +74,7 @@ public sealed class CodespaceStorageCleanupService(
 
         bool IsEligible(CodespaceSnapshot snapshot) =>
             IsStoppedState(snapshot.State) &&
-            string.Equals(snapshot.RepositoryFullName, repositoryFullName, StringComparison.OrdinalIgnoreCase) &&
+            CodespaceProxyRepositoryPolicy.IsProxyRepository(snapshot.RepositoryFullName, account.Username) &&
             !protectedNames.Contains(snapshot.Name);
     }
 

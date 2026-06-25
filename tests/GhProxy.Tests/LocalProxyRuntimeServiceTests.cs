@@ -247,6 +247,7 @@ public sealed class LocalProxyRuntimeServiceTests
             var now = DateTimeOffset.UtcNow;
             await AddCodespaceSessionAsync(provider, profile, account.Id, LocalProxySessionStatus.Stopped, now.AddHours(-2), now.AddHours(-1), null);
             await AddCodespaceSessionAsync(provider, profile, account.Id, LocalProxySessionStatus.Error, now.AddMinutes(-30), now.AddMinutes(-5), "restart failure");
+            await AddCodespaceSnapshotAsync(provider, account.Id, "space", "Shutdown", "octocat/proxy2", now);
             var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
 
             await runtime.RetryIfDueAsync(CancellationToken.None);
@@ -255,6 +256,46 @@ public sealed class LocalProxyRuntimeServiceTests
             var status = runtime.GetAutomationStatus();
             Assert.Equal("Retrying", status.Phase);
             Assert.NotNull(status.NextRetryAt);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task RetryCodespaceProxyAsync_SkipsLatestLimitedSessionAndSelectsHealthyProxyCodespace()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var now = DateTimeOffset.UtcNow;
+        var github = new FakeGitHubApiClient();
+        github.UsageByToken["limited-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Limited, "limited", null, null, null, "billing", []);
+        github.UsageByToken["healthy-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 1, "hours", 0, "billing", []);
+        github.CodespacesByToken["limited-token"] =
+        [
+            new GitHubCodespaceRemote("limited-space", "Available", "limited/proxy2", null, null, null, null, now, now, now)
+        ];
+        github.CodespacesByToken["healthy-token"] =
+        [
+            new GitHubCodespaceRemote("healthy-space", "Available", "healthy/proxy", null, null, null, null, now, now, now)
+        ];
+        await using var provider = CreateProvider(databasePath, github);
+        try
+        {
+            var limited = await CreateAccountAsync(provider, "limited", "limited-token", GitHubAccountQuotaState.Limited);
+            var healthy = await CreateAccountAsync(provider, "healthy", "healthy-token", GitHubAccountQuotaState.Healthy);
+            var profile = await CreateProfileAsync(provider, GetFreePort(), GetFreePort());
+            await AddCodespaceSessionAsync(provider, profile, limited.Id, LocalProxySessionStatus.Error, now.AddMinutes(-30), now.AddMinutes(-5), "limited failure");
+            await AddCodespaceSnapshotAsync(provider, limited.Id, "limited-space", "Available", "limited/proxy2", now);
+            var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
+
+            var result = await runtime.RetryCodespaceProxyAsync(CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(0, github.StartCalls);
+            var status = runtime.GetAutomationStatus();
+            Assert.Equal(healthy.Id, status.AccountId);
+            Assert.Equal("healthy-space", status.CodespaceName);
         }
         finally
         {
@@ -576,6 +617,8 @@ public sealed class LocalProxyRuntimeServiceTests
         Assert.Contains("-D", arguments);
         Assert.Contains("127.0.0.1:39001", arguments);
         Assert.DoesNotContain("-L", arguments);
+        Assert.Contains("ControlMaster=no", arguments);
+        Assert.Contains("ControlPath=none", arguments);
         Assert.DoesNotContain(arguments, argument => argument.Contains("8899", StringComparison.Ordinal));
         Assert.Equal("codespace-host", arguments[^1]);
     }
@@ -630,6 +673,8 @@ public sealed class LocalProxyRuntimeServiceTests
         services.AddSingleton<IGitHubApiClient>(github ?? new FakeGitHubApiClient());
         services.AddScoped<AuditService>();
         services.AddScoped<GitHubCodespaceService>();
+        services.AddScoped<CodespaceStorageCleanupService>();
+        services.AddScoped<CodespaceProxyAutomationService>();
         services.AddSingleton(toolChecker ?? new AvailableRuntimeToolChecker());
         services.AddSingleton<XrayConfigRenderer>();
         services.AddSingleton(xrayRunner ?? new ThrowingXrayProcessRunner());
@@ -640,6 +685,7 @@ public sealed class LocalProxyRuntimeServiceTests
             options.ProbeUrl = "http://example.com/";
             configureOptions?.Invoke(options);
         });
+        services.Configure<GitHubOptions>(_ => { });
         services.AddSingleton<LocalProxyRuntimeService>();
         var provider = services.BuildServiceProvider();
 
@@ -738,7 +784,11 @@ public sealed class LocalProxyRuntimeServiceTests
         return session;
     }
 
-    private static async Task<GitHubAccount> CreateAccountAsync(ServiceProvider provider)
+    private static async Task<GitHubAccount> CreateAccountAsync(
+        ServiceProvider provider,
+        string username = "octocat",
+        string protectedToken = "token",
+        GitHubAccountQuotaState quotaState = GitHubAccountQuotaState.Unknown)
     {
         using var scope = provider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -746,14 +796,36 @@ public sealed class LocalProxyRuntimeServiceTests
         var account = new GitHubAccount
         {
             DisplayName = "Primary",
-            Username = "octocat",
-            ProtectedPersonalAccessToken = "token",
+            Username = username,
+            ProtectedPersonalAccessToken = protectedToken,
+            QuotaState = quotaState,
             CreatedAt = now,
             UpdatedAt = now
         };
         db.GitHubAccounts.Add(account);
         await db.SaveChangesAsync();
         return account;
+    }
+
+    private static async Task AddCodespaceSnapshotAsync(
+        ServiceProvider provider,
+        Guid accountId,
+        string name,
+        string state,
+        string repositoryFullName,
+        DateTimeOffset now)
+    {
+        using var scope = provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.CodespaceSnapshots.Add(new CodespaceSnapshot
+        {
+            AccountId = accountId,
+            Name = name,
+            State = state,
+            RepositoryFullName = repositoryFullName,
+            LastSyncedAt = now
+        });
+        await db.SaveChangesAsync();
     }
 
     private static int GetFreePort()
@@ -922,6 +994,8 @@ public sealed class LocalProxyRuntimeServiceTests
     {
         public Exception? ListCodespacesException { get; init; }
         public IReadOnlyList<GitHubCodespaceRemote> Codespaces { get; init; } = [];
+        public Dictionary<string, IReadOnlyList<GitHubCodespaceRemote>> CodespacesByToken { get; } = [];
+        public Dictionary<string, GitHubUsageResponse> UsageByToken { get; } = [];
         public int StartCalls { get; private set; }
 
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
@@ -940,7 +1014,7 @@ public sealed class LocalProxyRuntimeServiceTests
                 throw ListCodespacesException;
             }
 
-            return Task.FromResult(Codespaces);
+            return Task.FromResult(CodespacesByToken.GetValueOrDefault(token) ?? Codespaces);
         }
 
         public Task<GitHubCodespaceRemote> CreateCodespaceAsync(string token, CreateCodespaceRequest request, CancellationToken cancellationToken) =>
@@ -965,7 +1039,7 @@ public sealed class LocalProxyRuntimeServiceTests
             throw new NotSupportedException();
 
         public Task<GitHubUsageResponse> GetCodespacesUsageAsync(string token, string username, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", null, null, null, "https://github.com/settings/billing/usage", []));
+            Task.FromResult(UsageByToken.GetValueOrDefault(token) ?? new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", null, null, null, "https://github.com/settings/billing/usage", []));
     }
 
     private sealed class TestHostEnvironment(string contentRootPath) : IHostEnvironment

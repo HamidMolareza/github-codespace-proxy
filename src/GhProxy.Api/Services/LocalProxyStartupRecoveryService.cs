@@ -40,11 +40,28 @@ public sealed class LocalProxyStartupRecoveryService(
                 Details: new { staleSession.ProfileId, staleSession.CodespaceName }),
                 stoppingToken);
 
-            var result = await runtime.StartCodespaceProxyAsync(
-                staleSession.AccountId!.Value,
-                staleSession.CodespaceName!,
-                staleSession.ProfileId,
-                stoppingToken);
+            LocalProxyStartResult result;
+            if (await runtime.CanReplayCodespaceSessionAsync(staleSession.AccountId!.Value, null, staleSession.CodespaceName!, stoppingToken))
+            {
+                result = await runtime.StartCodespaceProxyAsync(
+                    staleSession.AccountId!.Value,
+                    staleSession.CodespaceName!,
+                    staleSession.ProfileId,
+                    stoppingToken);
+            }
+            else
+            {
+                await events.WriteAsync(new OperationalEventWrite(
+                    "local_proxy.startup_recovery.saved_session_skipped",
+                    OperationalEventSeverity.Warning,
+                    "Saved startup recovery session points at a limited account or non-proxy Codespace; selecting a fresh Codespace.",
+                    NodeId: staleSession.AccountId,
+                    SessionId: staleSession.Id,
+                    Details: new { staleSession.ProfileId, staleSession.CodespaceName }),
+                    stoppingToken);
+
+                result = await runtime.EnsureAutomaticCodespaceProxyAsync(stoppingToken);
+            }
 
             await events.WriteAsync(new OperationalEventWrite(
                 result.Succeeded ? "local_proxy.startup_recovery.succeeded" : "local_proxy.startup_recovery.failed",

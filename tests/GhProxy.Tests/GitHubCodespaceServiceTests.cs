@@ -431,10 +431,65 @@ public sealed class GitHubCodespaceServiceTests
             var usage = await service.GetUsageAsync(account.Id, CancellationToken.None);
 
             Assert.Equal(GitHubAccountQuotaState.Limited, usage.State);
-            var compute = Assert.Single(usage.Quotas);
+            var compute = Assert.Single(usage.Quotas, x => x.Name == "Compute");
             Assert.Equal(180m, compute.Limit);
             Assert.Equal(0m, compute.Remaining);
             Assert.Equal(100.6m, compute.PercentUsed);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task GetUsageAsync_AddsKnownPlanQuotaRowsWhenUsageIsEmpty()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = new GitHubAccount
+            {
+                DisplayName = "Primary",
+                Username = "octocat",
+                ProtectedPersonalAccessToken = "token",
+                Plan = "Free",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            db.GitHubAccounts.Add(account);
+            await db.SaveChangesAsync();
+            var github = new FakeGitHubApiClient
+            {
+                Usage = new GitHubUsageResponse(
+                    GitHubAccountQuotaState.Healthy,
+                    "Usage endpoint is reachable, but no Codespaces items were returned.",
+                    null,
+                    null,
+                    null,
+                    "billing",
+                    [])
+            };
+            var service = CreateService(db, github);
+
+            var usage = await service.GetUsageAsync(account.Id, CancellationToken.None);
+
+            Assert.Equal(GitHubAccountQuotaState.Healthy, usage.State);
+            var compute = Assert.Single(usage.Quotas, x => x.Name == "Compute");
+            Assert.Equal(0m, compute.Used);
+            Assert.Equal(120m, compute.Limit);
+            Assert.Equal(120m, compute.Remaining);
+            Assert.Equal(0m, compute.PercentUsed);
+            var storage = Assert.Single(usage.Quotas, x => x.Name == "Storage");
+            Assert.Equal(0m, storage.Used);
+            Assert.Equal(15m, storage.Limit);
+            Assert.Equal(15m, storage.Remaining);
+            Assert.Equal(0m, storage.PercentUsed);
         }
         finally
         {

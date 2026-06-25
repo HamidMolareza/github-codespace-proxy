@@ -430,7 +430,7 @@ public sealed class GitHubCodespaceService(
         }
 
         var planLimits = GetPlanLimits(plan);
-        var quotas = usage.Quotas
+        var quotas = EnsurePlanQuotaRows(usage.Quotas, planLimits)
             .Select(quota => ApplyLimit(quota, GetLimit(quota.Name, planLimits)))
             .ToList();
         var maxPercentUsed = quotas
@@ -446,6 +446,24 @@ public sealed class GitHubCodespaceService(
         };
 
         return usage with { State = state, Quotas = quotas };
+    }
+
+    private static IReadOnlyList<GitHubUsageQuotaSummaryResponse> EnsurePlanQuotaRows(
+        IReadOnlyList<GitHubUsageQuotaSummaryResponse> quotas,
+        (decimal? Compute, decimal? Storage) planLimits)
+    {
+        var next = quotas.ToList();
+        if (planLimits.Compute is not null && !next.Any(x => x.Name.Equals("Compute", StringComparison.OrdinalIgnoreCase)))
+        {
+            next.Insert(0, new GitHubUsageQuotaSummaryResponse("Compute", 0, null, null, null, "included units"));
+        }
+
+        if (planLimits.Storage is not null && !next.Any(x => x.Name.Equals("Storage", StringComparison.OrdinalIgnoreCase)))
+        {
+            next.Add(new GitHubUsageQuotaSummaryResponse("Storage", 0, null, null, null, "GB-month"));
+        }
+
+        return next;
     }
 
     private static (decimal? Compute, decimal? Storage) GetPlanLimits(string plan) =>

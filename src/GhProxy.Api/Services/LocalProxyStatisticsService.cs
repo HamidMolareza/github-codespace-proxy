@@ -17,6 +17,7 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
         "local_proxy.probe.http.failure",
         "local_proxy.probe.socks.failure",
         "local_proxy.xray.exited",
+        "codespace_proxy.tunnel.interrupted",
         "codespace_proxy.tunnel.exited"
     };
 
@@ -26,6 +27,7 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
         "local_proxy.stop.completed",
         "local_proxy.stop.none",
         "local_proxy.idle.timeout",
+        "codespace_proxy.tunnel.reconnected",
         "session.stop.completed",
         "session.idle.timeout"
     };

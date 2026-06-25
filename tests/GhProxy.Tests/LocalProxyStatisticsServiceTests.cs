@@ -131,6 +131,35 @@ public sealed class LocalProxyStatisticsServiceTests
     }
 
     [Fact]
+    public async Task GetAsync_CountsTunnelReconnectWindowAsErrorAndKeepsSessionActive()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var now = new DateTimeOffset(2026, 5, 25, 8, 0, 0, TimeSpan.Zero);
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = await AddAccountAsync(db);
+            await AddSessionAsync(db, account.Id, now.AddHours(-2), null, LocalProxySessionStatus.Running);
+            AddEvent(db, "codespace_proxy.tunnel.interrupted", now.AddMinutes(-20));
+            AddEvent(db, "codespace_proxy.tunnel.reconnected", now.AddMinutes(-18).AddSeconds(-30));
+            await db.SaveChangesAsync();
+            var service = new LocalProxyStatisticsService(db, new TestClock(now));
+
+            var stats = await service.GetAsync("24h", CancellationToken.None);
+
+            Assert.Equal(7110, stats.Totals.ActiveSeconds);
+            Assert.Equal(90, stats.Totals.ErrorSeconds);
+            Assert.Equal(1, stats.Totals.SessionCount);
+            Assert.Contains(stats.HourlyBuckets, bucket => bucket.ErrorSeconds == 90);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task GetAsync_ExtendsUnresolvedFailureToCurrentTime()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");

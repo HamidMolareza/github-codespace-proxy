@@ -286,6 +286,8 @@ export interface GitHubUsageForecast {
   message: string;
   includedAccountCount: number;
   unavailableAccountCount: number;
+  usableAccountCount: number;
+  limitedAccountCount: number;
   defaultMachineCoreCount: number;
   warnings: string[];
 }

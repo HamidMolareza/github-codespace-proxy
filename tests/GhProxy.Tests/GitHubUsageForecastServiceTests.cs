@@ -55,6 +55,8 @@ public sealed class GitHubUsageForecastServiceTests
 
             Assert.Equal("Healthy", forecast.Status);
             Assert.Equal(1, forecast.IncludedAccountCount);
+            Assert.Equal(1, forecast.UsableAccountCount);
+            Assert.Equal(0, forecast.LimitedAccountCount);
             Assert.Equal(19, forecast.DaysUntilReset);
             Assert.Equal(120m, forecast.TotalComputeLimit);
             Assert.Equal(60m, forecast.TotalComputeRemaining);
@@ -63,6 +65,70 @@ public sealed class GitHubUsageForecastServiceTests
             Assert.Equal(30m, forecast.EstimatedQuotaDays);
             Assert.Equal(19, forecast.EstimatedUsableDays);
             Assert.Empty(forecast.Warnings);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task GetAsync_IncludesKnownPlanAccountsWithEmptyUsageRows()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var now = new DateTimeOffset(2026, 6, 11, 12, 0, 0, TimeSpan.Zero);
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            db.GitHubAccounts.Add(CreateAccount("Used", "used", "used-token", "Free", now));
+            db.GitHubAccounts.Add(CreateAccount("Empty", "empty", "empty-token", "Free", now));
+            db.GitHubAccounts.Add(CreateAccount("Limited", "limited", "limited-token", "Free", now));
+            await db.SaveChangesAsync();
+            var github = new FakeGitHubApiClient();
+            github.UsageByToken["used-token"] = new GitHubUsageResponse(
+                GitHubAccountQuotaState.Healthy,
+                "ok",
+                35,
+                "core hours",
+                0,
+                "billing",
+                [new GitHubUsageQuotaSummaryResponse("Compute", 70, null, null, null, "core hours")],
+                2026,
+                6,
+                GitHubUsageForecastService.NextResetAt(2026, 6));
+            github.UsageByToken["empty-token"] = new GitHubUsageResponse(
+                GitHubAccountQuotaState.Healthy,
+                "Usage endpoint is reachable, but no Codespaces items were returned.",
+                null,
+                null,
+                null,
+                "billing",
+                [],
+                2026,
+                6,
+                GitHubUsageForecastService.NextResetAt(2026, 6));
+            github.UsageByToken["limited-token"] = new GitHubUsageResponse(
+                GitHubAccountQuotaState.Healthy,
+                "ok",
+                60,
+                "core hours",
+                0,
+                "billing",
+                [new GitHubUsageQuotaSummaryResponse("Compute", 120, null, null, null, "core hours")],
+                2026,
+                6,
+                GitHubUsageForecastService.NextResetAt(2026, 6));
+            var service = CreateForecastService(db, github, now);
+
+            var forecast = await service.GetAsync(CancellationToken.None);
+
+            Assert.Equal(3, forecast.IncludedAccountCount);
+            Assert.Equal(2, forecast.UsableAccountCount);
+            Assert.Equal(1, forecast.LimitedAccountCount);
+            Assert.Equal(360m, forecast.TotalComputeLimit);
+            Assert.Equal(170m, forecast.TotalComputeRemaining);
+            Assert.DoesNotContain(forecast.Warnings, warning => warning.Contains("No compute usage was returned", StringComparison.OrdinalIgnoreCase));
         }
         finally
         {
