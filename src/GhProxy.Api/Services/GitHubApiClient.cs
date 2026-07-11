@@ -331,18 +331,11 @@ public sealed class GitHubApiClient(
             request.Content = new StringContent(JsonSerializer.Serialize(body, JsonOptions), Encoding.UTF8, "application/json");
         }
 
-        await events.WriteAsync(new OperationalEventWrite(
-            eventType,
-            OperationalEventSeverity.Information,
-            $"Calling GitHub API {method} {path}.",
-            CommandKind: "github-api",
-            CommandDisplay: $"{method} {path}"), cancellationToken);
-
         try
         {
             var response = await httpClient.SendAsync(request, cancellationToken);
             stopwatch.Stop();
-            logger.LogInformation("GitHub API {Method} {Path} returned {StatusCode} in {ElapsedMs}ms.", method, path, (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
+            logger.LogDebug("GitHub API {Method} {Path} returned {StatusCode} in {ElapsedMs}ms.", method, path, (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
             return response;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -360,15 +353,8 @@ public sealed class GitHubApiClient(
         }
     }
 
-    private Task WriteSuccessAsync(string eventType, HttpResponseMessage response, CancellationToken cancellationToken) =>
-        events.WriteAsync(new OperationalEventWrite(
-            eventType,
-            OperationalEventSeverity.Information,
-            $"GitHub API returned {(int)response.StatusCode} {response.ReasonPhrase}.",
-            CommandKind: "github-api",
-            CommandDisplay: $"{response.RequestMessage?.Method} {response.RequestMessage?.RequestUri?.PathAndQuery}",
-            ExitCode: (int)response.StatusCode),
-            cancellationToken);
+    private static Task WriteSuccessAsync(string eventType, HttpResponseMessage response, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
 
     private Task WriteFailureAsync(string eventType, HttpResponseMessage response, string body, CancellationToken cancellationToken) =>
         events.WriteAsync(new OperationalEventWrite(

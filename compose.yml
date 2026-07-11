@@ -1,5 +1,12 @@
 name: gh-proxy
 
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+    compress: "true"
+
 services:
   backend:
     build:
@@ -20,6 +27,10 @@ services:
         https_proxy: "${https_proxy:-}"
         no_proxy: "${no_proxy:-localhost,127.0.0.1}"
     image: gh-proxy-api:local
+    logging: *default-logging
+    mem_limit: 1g
+    memswap_limit: 1280m
+    pids_limit: 256
     network_mode: host
     restart: unless-stopped
     environment:
@@ -64,6 +75,7 @@ services:
         https_proxy: "${https_proxy:-}"
         no_proxy: "${no_proxy:-localhost,127.0.0.1}"
     image: gh-proxy-frontend:local
+    logging: *default-logging
     network_mode: host
     restart: unless-stopped
     environment:

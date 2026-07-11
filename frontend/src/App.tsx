@@ -201,8 +201,8 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     await loadAccounts();
-    await Promise.all([loadLocalProxy(), loadStatistics(), loadActivity(), loadUsageForecast()]);
-  }, [loadAccounts, loadActivity, loadLocalProxy, loadStatistics, loadUsageForecast]);
+    await Promise.all([loadLocalProxy(), loadUsageForecast()]);
+  }, [loadAccounts, loadLocalProxy, loadUsageForecast]);
 
   useEffect(() => {
     loadAll().catch((error) => setNotice({ kind: 'error', text: errorMessage(error) }));
@@ -221,13 +221,33 @@ export default function App() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       loadAccounts().catch(() => undefined);
-      loadCodespaces().catch(() => undefined);
-      loadLocalProxy().catch(() => undefined);
-      loadStatistics().catch(() => undefined);
-      loadActivity().catch(() => undefined);
+      if (activeTab === 'codespaces') {
+        loadCodespaces().catch(() => undefined);
+      } else if (activeTab === 'local-proxy') {
+        loadLocalProxy().catch(() => undefined);
+      } else if (activeTab === 'statistics') {
+        loadStatistics().catch(() => undefined);
+      }
     }, 20000);
     return () => window.clearInterval(timer);
-  }, [loadAccounts, loadActivity, loadCodespaces, loadLocalProxy, loadStatistics]);
+  }, [activeTab, loadAccounts, loadCodespaces, loadLocalProxy, loadStatistics]);
+
+  useEffect(() => {
+    if (activeTab === 'statistics') {
+      loadStatistics().catch(() => undefined);
+      return undefined;
+    }
+    if (activeTab !== 'activity') {
+      return undefined;
+    }
+    loadActivity().catch(() => undefined);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) {
+        loadActivity().catch(() => undefined);
+      }
+    }, 60000);
+    return () => window.clearInterval(timer);
+  }, [activeTab, loadActivity, loadStatistics]);
 
   async function runAction(label: string, action: () => Promise<unknown>) {
     setBusy(label);
@@ -239,11 +259,15 @@ export default function App() {
       await loadLocalProxy();
       const accountId = lifecycleAccountId(result) ?? selectedAccountId;
       await loadCodespaces(accountId);
-      await loadActivity();
+      if (activeTab === 'activity') {
+        await loadActivity();
+      }
       await loadUsageForecast().catch(() => undefined);
     } catch (error) {
       setNotice({ kind: 'error', text: errorMessage(error) });
-      await loadActivity().catch(() => undefined);
+      if (activeTab === 'activity') {
+        await loadActivity().catch(() => undefined);
+      }
     } finally {
       setBusy(null);
     }

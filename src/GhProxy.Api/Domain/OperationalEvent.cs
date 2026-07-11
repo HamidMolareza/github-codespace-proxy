@@ -4,6 +4,7 @@ public sealed class OperationalEvent
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public DateTimeOffset Timestamp { get; set; }
+    public long TimestampUtcMs { get; set; }
     public string Severity { get; set; } = "Information";
     public string EventType { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;

@@ -52,9 +52,26 @@ public sealed class LocalProxyStatisticsService(AppDbContext db, IClock clock)
             .OrderBy(interval => interval.Start)
             .ToList();
 
+        var relevantEventTypes = ErrorStartEvents.Concat(ErrorEndEvents).ToArray();
+        var rangeStartMs = range.RangeStart.ToUnixTimeMilliseconds();
+        var rangeEndMs = range.RangeEnd.ToUnixTimeMilliseconds();
+        var previousEvent = await db.OperationalEvents
+            .AsNoTracking()
+            .Where(x => relevantEventTypes.Contains(x.EventType) && x.TimestampUtcMs < rangeStartMs)
+            .OrderByDescending(x => x.TimestampUtcMs)
+            .FirstOrDefaultAsync(cancellationToken);
         var operationalEvents = await db.OperationalEvents
             .AsNoTracking()
+            .Where(x =>
+                relevantEventTypes.Contains(x.EventType) &&
+                x.TimestampUtcMs >= rangeStartMs &&
+                x.TimestampUtcMs <= rangeEndMs)
+            .OrderBy(x => x.TimestampUtcMs)
             .ToListAsync(cancellationToken);
+        if (previousEvent is not null)
+        {
+            operationalEvents.Insert(0, previousEvent);
+        }
         var errorIntervals = BuildErrorIntervals(operationalEvents, range.RangeStart, range.RangeEnd, now);
         var activeIntervals = SubtractIntervals(MergeIntervals(sessions), errorIntervals);
         var buckets = range.Buckets

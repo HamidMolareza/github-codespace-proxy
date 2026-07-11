@@ -63,7 +63,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.StandardOutputSnippet).HasMaxLength(8000);
             entity.Property(x => x.StandardErrorSnippet).HasMaxLength(8000);
             entity.Property(x => x.DetailsJson).HasMaxLength(8000);
-            entity.HasIndex(x => x.Timestamp);
+            entity.HasIndex(x => x.TimestampUtcMs);
+            entity.HasIndex(x => new { x.EventType, x.TimestampUtcMs });
             entity.HasIndex(x => x.CorrelationId);
             entity.HasIndex(x => x.NodeId);
         });
@@ -155,5 +156,25 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(x => x.ObservedAt);
             entity.HasIndex(x => x.SessionId);
         });
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        NormalizeOperationalEventTimestamps();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        NormalizeOperationalEventTimestamps();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void NormalizeOperationalEventTimestamps()
+    {
+        foreach (var entry in ChangeTracker.Entries<OperationalEvent>().Where(x => x.State == EntityState.Added))
+        {
+            entry.Entity.TimestampUtcMs = entry.Entity.Timestamp.ToUnixTimeMilliseconds();
+        }
     }
 }

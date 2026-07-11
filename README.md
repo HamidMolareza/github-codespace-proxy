@@ -123,6 +123,8 @@ The Activity tab reads structured operational events from SQLite and JSONL logs.
 GET /api/local-proxy/statistics?period=24h|7d|30d
 ```
 
+Activity queries filter, sort, aggregate, and limit in SQLite; they never load the full event table into application memory. The frontend fetches Activity and Statistics only while their tabs are visible. Detailed events are retained for 14 days, while the small lifecycle/error subset used for statistics is retained for 30 days.
+
 Statistics use app-managed local proxy sessions as the source of truth:
 
 - Green: active time.

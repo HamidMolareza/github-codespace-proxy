@@ -16,6 +16,7 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
             CREATE TABLE IF NOT EXISTS "OperationalEvents" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_OperationalEvents" PRIMARY KEY,
                 "Timestamp" TEXT NOT NULL,
+                "TimestampUtcMs" INTEGER NOT NULL,
                 "Severity" TEXT NOT NULL,
                 "EventType" TEXT NOT NULL,
                 "Message" TEXT NOT NULL,
@@ -33,8 +34,22 @@ public sealed class DatabaseSchemaInitializer(AppDbContext db)
             );
             """,
             cancellationToken);
+        await AddColumnIfMissingAsync("OperationalEvents", "TimestampUtcMs", "\"TimestampUtcMs\" INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await db.Database.ExecuteSqlRawAsync(
-            """CREATE INDEX IF NOT EXISTS "IX_OperationalEvents_Timestamp" ON "OperationalEvents" ("Timestamp");""",
+            """
+            UPDATE "OperationalEvents"
+            SET "TimestampUtcMs" = CAST((julianday("Timestamp") - 2440587.5) * 86400000 AS INTEGER)
+            WHERE "TimestampUtcMs" = 0;
+            """,
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_OperationalEvents_TimestampUtcMs" ON "OperationalEvents" ("TimestampUtcMs");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_OperationalEvents_EventType_TimestampUtcMs" ON "OperationalEvents" ("EventType", "TimestampUtcMs");""",
+            cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """DROP INDEX IF EXISTS "IX_OperationalEvents_Timestamp";""",
             cancellationToken);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_OperationalEvents_CorrelationId" ON "OperationalEvents" ("CorrelationId");""",

@@ -195,10 +195,13 @@ The backend stores events in SQLite table `OperationalEvents` and writes local J
 "Observability": {
   "LogDirectory": "data/logs",
   "RetentionDays": 14,
+  "StatisticsRetentionDays": 30,
   "MaxOutputChars": 4000,
   "EnableJsonlFile": true
 }
 ```
+
+SQLite Activity queries are server-side, indexed, and capped at 500 rows. Routine GitHub API request/sync successes are not persisted; failures and user/lifecycle actions remain available. The UI polls Activity at 60-second intervals only while that tab is visible. The retention worker also removes audit rows older than 14 days.
 
 Secrets are redacted before command output, command display strings, details JSON, and error messages are persisted.
 

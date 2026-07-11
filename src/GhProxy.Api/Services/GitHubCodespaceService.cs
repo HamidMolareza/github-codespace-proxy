@@ -233,8 +233,6 @@ public sealed class GitHubCodespaceService(
         account.UpdatedAt = now;
         DeleteOldStateSamples(now);
         await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("github.codespaces.sync", $"Synced {remoteCodespaces.Count} Codespaces.", account.Id, cancellationToken);
-
         return await db.CodespaceSnapshots
             .AsNoTracking()
             .Where(x => x.AccountId == accountId)

@@ -47,6 +47,7 @@ builder.Services.AddScoped<GitHubCodespaceService>();
 builder.Services.AddScoped<CodespaceStorageCleanupService>();
 builder.Services.AddScoped<CodespaceProxyAutomationService>();
 builder.Services.AddScoped<LocalProxyStatisticsService>();
+builder.Services.AddScoped<ObservabilityQueryService>();
 builder.Services.AddScoped<GitHubUsageForecastService>();
 builder.Services.AddSingleton<XrayConfigRenderer>();
 builder.Services.AddSingleton<IXrayProcessRunner, XrayProcessRunner>();
