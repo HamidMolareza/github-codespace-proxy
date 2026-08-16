@@ -133,7 +133,24 @@ public sealed class LocalProxyRuntimeService(
             using var scope = scopeFactory.CreateScope();
             var automation = scope.ServiceProvider.GetRequiredService<CodespaceProxyAutomationService>();
             SetAutomationStatus("SelectingAccount", null, null, null, null, null);
-            var selection = await automation.SelectAsync(cancellationToken);
+            CodespaceProxySelectionResult selection;
+            try
+            {
+                selection = await automation.SelectAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                var message = $"Failed to select a Codespace proxy: {ex.Message}";
+                SetAutomationStatus("Error", null, null, null, null, message);
+                await events.WriteAsync(new OperationalEventWrite(
+                    "codespace_proxy.automation.selection_failed",
+                    OperationalEventSeverity.Error,
+                    message,
+                    StandardError: ex.ToString()),
+                    cancellationToken);
+                return LocalProxyStartResult.Fail(message, null);
+            }
+
             if (!selection.Succeeded || selection.Selection is null)
             {
                 SetAutomationStatus("Error", null, null, null, null, selection.Message);

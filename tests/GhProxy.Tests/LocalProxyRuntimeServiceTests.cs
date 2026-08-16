@@ -209,6 +209,34 @@ public sealed class LocalProxyRuntimeServiceTests
     }
 
     [Fact]
+    public async Task EnsureAutomaticCodespaceProxyAsync_ReportsSelectionExceptionAsError()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        var github = new FakeGitHubApiClient
+        {
+            RepositoryException = new InvalidOperationException("repository resolution failed")
+        };
+        await using var provider = CreateProvider(databasePath, github);
+        try
+        {
+            await CreateAccountAsync(provider);
+            var runtime = provider.GetRequiredService<LocalProxyRuntimeService>();
+
+            var result = await runtime.EnsureAutomaticCodespaceProxyAsync(CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("repository resolution failed", result.Message, StringComparison.OrdinalIgnoreCase);
+            var status = runtime.GetAutomationStatus();
+            Assert.Equal("Error", status.Phase);
+            Assert.Contains("repository resolution failed", status.LastError, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task RetryIfDueAsync_DoesNotScheduleOlderFailureWhenLatestCodespaceSessionStopped()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
@@ -993,6 +1021,7 @@ public sealed class LocalProxyRuntimeServiceTests
     private sealed class FakeGitHubApiClient : IGitHubApiClient
     {
         public Exception? ListCodespacesException { get; init; }
+        public Exception? RepositoryException { get; init; }
         public IReadOnlyList<GitHubCodespaceRemote> Codespaces { get; init; } = [];
         public Dictionary<string, IReadOnlyList<GitHubCodespaceRemote>> CodespacesByToken { get; } = [];
         public Dictionary<string, GitHubUsageResponse> UsageByToken { get; } = [];
@@ -1001,11 +1030,19 @@ public sealed class LocalProxyRuntimeServiceTests
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult(new GitHubUserProfile("octocat", "Octo Cat", "Free"));
 
-        public Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
-            Task.FromResult(true);
+        public Task<GitHubRepositoryRemote?> GetRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken)
+        {
+            if (RepositoryException is not null)
+            {
+                throw RepositoryException;
+            }
 
-        public Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+            return Task.FromResult<GitHubRepositoryRemote?>(
+                new GitHubRepositoryRemote(owner, repository, $"{owner}/{repository}", null, null, null));
+        }
+
+        public Task<GitHubRepositoryRemote> ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
+            Task.FromResult(new GitHubRepositoryRemote("octocat", repository, $"octocat/{repository}", owner, repository, $"{owner}/{repository}"));
 
         public Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken)
         {

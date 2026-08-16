@@ -17,6 +17,14 @@ public sealed class GitHubApiException(HttpStatusCode statusCode, string message
 
 public sealed record GitHubUserProfile(string Login, string? Name, string? PlanName);
 
+public sealed record GitHubRepositoryRemote(
+    string Owner,
+    string Name,
+    string FullName,
+    string? SourceOwner,
+    string? SourceName,
+    string? SourceFullName);
+
 public sealed record GitHubCodespaceExportRemote(
     string? Id,
     string? State,
@@ -39,8 +47,8 @@ public sealed record GitHubCodespaceRemote(
 public interface IGitHubApiClient
 {
     Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken);
-    Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken);
-    Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken);
+    Task<GitHubRepositoryRemote?> GetRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken);
+    Task<GitHubRepositoryRemote> ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken);
     Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken);
     Task<GitHubCodespaceRemote> CreateCodespaceAsync(string token, CreateCodespaceRequest request, CancellationToken cancellationToken);
     Task<GitHubCodespaceRemote> StartCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken);
@@ -73,29 +81,29 @@ public sealed class GitHubApiClient(
             planName);
     }
 
-    public async Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken)
+    public async Task<GitHubRepositoryRemote?> GetRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken)
     {
         try
         {
-            using var _ = await SendAsync(
+            using var document = await SendAsync(
                 token,
                 HttpMethod.Get,
                 $"repos/{Uri.EscapeDataString(owner.Trim())}/{Uri.EscapeDataString(repository.Trim())}",
                 null,
                 "github.repository.get",
                 cancellationToken);
-            return true;
+            return ToRepository(document.RootElement);
         }
         catch (GitHubApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            return false;
+            return null;
         }
     }
 
-    public async Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken)
+    public async Task<GitHubRepositoryRemote> ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken)
     {
         var payload = new Dictionary<string, object?> { ["default_branch_only"] = true };
-        var response = await SendCoreAsync(
+        using var response = await SendCoreAsync(
             token,
             HttpMethod.Post,
             $"repos/{Uri.EscapeDataString(owner.Trim())}/{Uri.EscapeDataString(repository.Trim())}/forks",
@@ -106,18 +114,12 @@ public sealed class GitHubApiClient(
         if (response.IsSuccessStatusCode)
         {
             await WriteSuccessAsync("github.repository.fork", response, cancellationToken);
-            return;
-        }
-
-        if (response.StatusCode == HttpStatusCode.UnprocessableEntity &&
-            content.Contains("already", StringComparison.OrdinalIgnoreCase))
-        {
-            await WriteSuccessAsync("github.repository.fork", response, cancellationToken);
-            return;
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(content) ? "{}" : content);
+            return ToRepository(document.RootElement);
         }
 
         await WriteFailureAsync("github.repository.fork", response, content, cancellationToken);
-        throw new GitHubApiException(response.StatusCode, $"GitHub API returned {(int)response.StatusCode} {response.ReasonPhrase}.", content);
+        throw new GitHubApiException(response.StatusCode, BuildGitHubErrorMessage(response, content), content);
     }
 
     public async Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken)
@@ -428,6 +430,26 @@ public sealed class GitHubApiClient(
             GetDate(element, "created_at"),
             GetDate(element, "updated_at"),
             GetDate(element, "last_used_at"));
+    }
+
+    private static GitHubRepositoryRemote ToRepository(JsonElement element)
+    {
+        var owner = GetNestedString(element, "owner", "login");
+        var name = GetString(element, "name");
+        var fullName = GetString(element, "full_name");
+        if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(fullName))
+        {
+            throw new InvalidOperationException("GitHub repository response did not include owner, name, and full_name.");
+        }
+
+        var hasSource = element.TryGetProperty("source", out var source) && source.ValueKind == JsonValueKind.Object;
+        return new GitHubRepositoryRemote(
+            owner,
+            name,
+            fullName,
+            hasSource ? GetNestedString(source, "owner", "login") : null,
+            hasSource ? GetString(source, "name") : null,
+            hasSource ? GetString(source, "full_name") : null);
     }
 
     private static GitHubCodespaceExportRemote ToExport(JsonElement element) =>

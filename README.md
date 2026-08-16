@@ -96,7 +96,7 @@ docker compose down
 
 The gateway binds the public proxy port immediately. When user proxy traffic arrives, the backend reuses an existing account-owned `proxy*` Codespace before creating anything new: active Codespaces first, stopped Codespaces second, and a new Codespace only when no reusable proxy Codespace exists. It then starts or attaches to the selected Codespace, opens a hidden local SOCKS listener through SSH, and routes Xray through that tunnel.
 
-For cost control, selection skips limited accounts, stops extra active account-owned `proxy*` Codespaces after choosing the backend, and automatically deletes stopped account-owned `proxy*` Codespaces when storage quota is limited. Manual or unrelated repository Codespaces are not deleted automatically.
+For cost control, selection skips limited accounts, stops extra active account-owned `proxy*` Codespaces after choosing the backend, and automatically deletes stopped account-owned `proxy*` Codespaces when storage quota is limited. Manual or unrelated repository Codespaces are not deleted automatically. When creation is required, the backend resolves the actual account-owned repository returned by GitHub instead of assuming the configured source repository name. If the selected account already owns the source network root, that root is reused directly; otherwise the actual fork identity from GitHub is polled and used to create the Codespace.
 
 The default tunnel mode uses an OpenSSH config from `gh codespace ssh --config`, then runs one long-lived OpenSSH dynamic SOCKS forward:
 
