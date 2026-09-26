@@ -2,7 +2,8 @@
 
 ## Delivery status
 
-Implemented, validated, and deployed on 2026-09-26 at 14:32 UTC. The
+Implemented, validated, and deployed on 2026-09-26 at 15:01 UTC from the
+merge commit `71f56fc`. The
 independent Sama VPN repair was tested in a guarded transaction and rolled back
 after PPTP/LCP failed; it remains a provider/path blocker. No proxy-router
 rules, WireGuard identities, or database/session mounts were changed by this
@@ -17,7 +18,7 @@ longer active, and may be emitted again after a backend restart. Local traffic
 accounting, profile idle timeout, and reconnect logic are unchanged. The Arvan
 20-minute policy remains a deployment/profile setting, not a new global default.
 
-Validation: 103 backend tests passed, including eight new theory cases covering
+Validation: 111 backend tests passed, including eight new theory cases covering
 Starting/Running protection, repeated passes, ending/re-entering active state,
 Stopped/Error/Stopping/no-session behavior, account/name isolation, and name case.
 Frontend lint/build and `docker compose config --quiet` passed. Roslyn MCP could
@@ -27,17 +28,17 @@ passed.
 
 ## Deployment identity
 
-- Local base: `5d053c017aee7bdd551d74914b12f24b7a994030`.
-- Live origin/main checked with ls-remote:
-  `ecd417263edb2dcac7195251b3013cd25d1a90d3` (one newer commit).
+- Local/deployed base: `71f56fce5600e22347265987d9d4308efe3391b2`.
+- Live `origin/main` now points to the same merge commit.
 - The deployed DLL matches the VPS offline publish DLL byte-for-byte and carries
-  informational version `1.0.0+5d053c017aee7bdd551d74914b12f24b7a994030`.
-- DLL SHA-256: `e22fef0b7296d07ef851dcd76264faf3f72f1574b43739c6f28b3138b428c860`.
-- Backend image: `sha256:472680220aaec901f5c78bdfa0412c066b17957e783081c2d511ee69728b4919`.
+  informational version `1.0.0+71f56fce5600e22347265987d9d4308efe3391b2`.
+- DLL SHA-256: `5e773a91e2a44dc0adca1d903f8ae11e8105ba7e1b787e993489de0cdb47a472`.
+- Backend image: `sha256:320ba92d8f90ec877f28d16190745609634ca1d1977854ea72d1e0ef8dfbea6c`.
 - Frontend image: `sha256:f254fd4a4ec1689ed3b8eb274289ed48163a83b655c277d84cc9739b381209cb`.
-- Both containers had restart count zero and OOM false.
+- Both containers were force-recreated at 15:01 UTC, are healthy, and have
+  restart count zero and OOM false.
 - Rollback compose and image metadata are retained under
-  `/opt/arvan-vps-gateway/backups/gh-proxy-maintenance-20260926T142427Z/`.
+  `/opt/arvan-vps-gateway/backups/gh-proxy-deploy-20260926T145837Z/`.
 
 The image has no revision label. The separate `/opt/arvan-vps-gateway/src/gh-proxy`
 source tree differs from local HEAD; it is not authoritative for the running
@@ -134,9 +135,9 @@ WireGuard SSH path. `ssh arvan` is healthy through `10.77.0.1`; direct public
 SSH to `94.101.185.175:22` still times out, so it is not an independent control
 path for the Sama transaction.
 
-Post-deploy validation on 2026-09-26 confirmed healthy gh-proxy containers and
-zero restarts/OOM. The operational log contained 34 historical
-`github.maintenance.autostop` entries for the day and no active-session skip
-entry yet; that is expected when no matching active session reaches an idle
-GitHub snapshot during the short post-deploy interval. The 24-hour acceptance
-window remains open.
+Post-deploy validation on 2026-09-26 confirmed the new backend image digest,
+healthy gh-proxy containers, zero restarts/OOM, API `200`, and frontend `200`.
+The operational log contained 34 historical `github.maintenance.autostop`
+entries before this deploy; no active-session skip entry has been observed yet.
+The 24-hour acceptance window starts at the force-recreate time and remains
+open.
