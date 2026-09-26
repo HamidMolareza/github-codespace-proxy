@@ -99,6 +99,7 @@ public sealed class CodespaceProxyAutomationService(
 
         AccountCandidate selectedAccount;
         CodespaceSnapshot selectedCodespace;
+        GitHubRepositoryRemote? selectedRepository = null;
         var createdNewCodespace = false;
         if (selectedExisting is not null)
         {
@@ -120,7 +121,7 @@ public sealed class CodespaceProxyAutomationService(
 
             selectedAccount = createAccount;
             var token = secrets.Unprotect(selectedAccount.Account.ProtectedPersonalAccessToken);
-            await EnsureForkAsync(selectedAccount.Account, token, cancellationToken);
+            selectedRepository = await ResolveProxyRepositoryAsync(selectedAccount.Account, token, cancellationToken);
             var snapshots = await codespaces.SyncAsync(selectedAccount.Account.Id, cancellationToken);
             var existingAfterFork = PickCodespace(snapshots, selectedAccount.Account.Username);
             if (existingAfterFork is not null)
@@ -133,8 +134,8 @@ public sealed class CodespaceProxyAutomationService(
                 selectedCodespace = await codespaces.CreateAsync(
                     selectedAccount.Account.Id,
                     new CreateCodespaceRequest(
-                        selectedAccount.Account.Username,
-                        _options.CodespaceRepositoryName,
+                        selectedRepository.Owner,
+                        selectedRepository.Name,
                         _options.CodespaceRepositoryRef,
                         _options.CodespaceGeo,
                         _options.CodespaceMachine,
@@ -144,7 +145,9 @@ public sealed class CodespaceProxyAutomationService(
             }
         }
 
-        var selectedRepositoryFullName = selectedCodespace.RepositoryFullName ?? $"{selectedAccount.Account.Username}/{_options.CodespaceRepositoryName}";
+        var selectedRepositoryFullName = selectedCodespace.RepositoryFullName
+                                         ?? selectedRepository?.FullName
+                                         ?? $"{selectedAccount.Account.Username}/{_options.CodespaceRepositoryName}";
         warnings.AddRange(await StopExtraCodespacesAsync(accounts, selectedAccount.Account.Id, selectedCodespace.Name, cancellationToken));
         await events.WriteAsync(new OperationalEventWrite(
             "codespace_proxy.account.selected",
@@ -180,12 +183,49 @@ public sealed class CodespaceProxyAutomationService(
                 .Select(x => new CodespaceCandidate(account, x));
     }
 
-    private async Task EnsureForkAsync(GitHubAccount account, string token, CancellationToken cancellationToken)
+    private async Task<GitHubRepositoryRemote> ResolveProxyRepositoryAsync(
+        GitHubAccount account,
+        string token,
+        CancellationToken cancellationToken)
     {
         var repositoryName = _options.CodespaceRepositoryName;
-        if (await github.RepositoryExistsAsync(token, account.Username, repositoryName, cancellationToken))
+        var existing = await github.GetRepositoryAsync(token, account.Username, repositoryName, cancellationToken);
+        if (existing is not null)
         {
-            return;
+            return ValidateProxyRepository(existing, account.Username);
+        }
+
+        var source = await github.GetRepositoryAsync(
+            token,
+            _options.CodespaceRepositoryOwner,
+            repositoryName,
+            cancellationToken);
+        if (source is null)
+        {
+            throw new InvalidOperationException(
+                $"Configured proxy repository {_options.CodespaceRepositoryOwner}/{repositoryName} was not found.");
+        }
+
+        var rootOwner = source.SourceOwner ?? source.Owner;
+        var rootName = source.SourceName ?? source.Name;
+        if (string.Equals(rootOwner, account.Username, StringComparison.OrdinalIgnoreCase))
+        {
+            var root = await github.GetRepositoryAsync(token, rootOwner, rootName, cancellationToken)
+                       ?? throw new InvalidOperationException($"Proxy repository root {rootOwner}/{rootName} was not found.");
+            root = ValidateProxyRepository(root, account.Username);
+            await events.WriteAsync(new OperationalEventWrite(
+                "codespace_proxy.repository.source_reused",
+                OperationalEventSeverity.Information,
+                "Reusing the selected GitHub account's proxy repository root.",
+                NodeId: account.Id,
+                Details: new
+                {
+                    account.Username,
+                    ConfiguredSource = source.FullName,
+                    Repository = root.FullName
+                }),
+                cancellationToken);
+            return root;
         }
 
         await events.WriteAsync(new OperationalEventWrite(
@@ -193,29 +233,59 @@ public sealed class CodespaceProxyAutomationService(
             OperationalEventSeverity.Information,
             "Forking the proxy repository for the selected GitHub account.",
             NodeId: account.Id,
-            Details: new { account.Username, _options.CodespaceRepositoryOwner, repositoryName }),
+            Details: new
+            {
+                account.Username,
+                ConfiguredSource = source.FullName
+            }),
             cancellationToken);
 
-        await github.ForkRepositoryAsync(token, _options.CodespaceRepositoryOwner, repositoryName, cancellationToken);
+        var fork = ValidateProxyRepository(
+            await github.ForkRepositoryAsync(token, source.Owner, source.Name, cancellationToken),
+            account.Username);
         var stopAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(90);
         while (DateTimeOffset.UtcNow < stopAt)
         {
-            if (await github.RepositoryExistsAsync(token, account.Username, repositoryName, cancellationToken))
+            var ready = await github.GetRepositoryAsync(token, fork.Owner, fork.Name, cancellationToken);
+            if (ready is not null)
             {
+                ready = ValidateProxyRepository(ready, account.Username);
                 await events.WriteAsync(new OperationalEventWrite(
                     "codespace_proxy.repository.fork.ready",
                     OperationalEventSeverity.Information,
                     "Proxy repository fork is ready.",
                     NodeId: account.Id,
-                    Details: new { account.Username, Repository = $"{account.Username}/{repositoryName}" }),
+                    Details: new
+                    {
+                        account.Username,
+                        Source = source.FullName,
+                        Repository = ready.FullName
+                    }),
                     cancellationToken);
-                return;
+                return ready;
             }
 
             await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
         }
 
-        throw new InvalidOperationException($"Repository fork {account.Username}/{repositoryName} was not ready in time.");
+        throw new InvalidOperationException($"Repository fork {fork.FullName} was not ready in time.");
+    }
+
+    private static GitHubRepositoryRemote ValidateProxyRepository(GitHubRepositoryRemote repository, string accountUsername)
+    {
+        if (!string.Equals(repository.Owner, accountUsername, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Resolved proxy repository {repository.FullName} is not owned by the selected account {accountUsername}.");
+        }
+
+        if (!CodespaceProxyRepositoryPolicy.IsProxyRepository(repository.FullName, accountUsername))
+        {
+            throw new InvalidOperationException(
+                $"Resolved repository {repository.FullName} is not an account-owned proxy repository.");
+        }
+
+        return repository;
     }
 
     private async Task<IReadOnlyList<string>> StopExtraCodespacesAsync(

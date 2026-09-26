@@ -589,11 +589,11 @@ public sealed class GitHubCodespaceServiceTests
                 : new GitHubUserProfile(AuthenticatedLogin, AuthenticatedName, AuthenticatedPlan));
         }
 
-        public Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
-            Task.FromResult(true);
+        public Task<GitHubRepositoryRemote?> GetRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
+            Task.FromResult<GitHubRepositoryRemote?>(new GitHubRepositoryRemote(owner, repository, $"{owner}/{repository}", null, null, null));
 
-        public Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+        public Task<GitHubRepositoryRemote> ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
+            Task.FromResult(new GitHubRepositoryRemote("octocat", repository, $"octocat/{repository}", owner, repository, $"{owner}/{repository}"));
 
         public Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult(Codespaces);

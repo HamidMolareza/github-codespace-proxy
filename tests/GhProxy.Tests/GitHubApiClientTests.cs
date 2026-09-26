@@ -28,6 +28,70 @@ public sealed class GitHubApiClientTests
     }
 
     [Fact]
+    public async Task GetRepositoryAsync_ReturnsRepositoryAndSourceIdentity()
+    {
+        const string responseJson = """
+        {
+          "name": "proxy2",
+          "full_name": "wproxy97/proxy2",
+          "owner": { "login": "wproxy97" },
+          "source": {
+            "name": "proxy",
+            "full_name": "HamidMolareza/proxy",
+            "owner": { "login": "HamidMolareza" }
+          }
+        }
+        """;
+        var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.OK, responseJson));
+
+        var repository = await client.GetRepositoryAsync("token", "wproxy97", "proxy2", CancellationToken.None);
+
+        Assert.NotNull(repository);
+        Assert.Equal("wproxy97/proxy2", repository.FullName);
+        Assert.Equal("HamidMolareza", repository.SourceOwner);
+        Assert.Equal("proxy", repository.SourceName);
+    }
+
+    [Fact]
+    public async Task ForkRepositoryAsync_ReturnsActualRepositoryIdentityFromAcceptedResponse()
+    {
+        const string responseJson = """
+        {
+          "name": "proxy",
+          "full_name": "octocat/proxy",
+          "owner": { "login": "octocat" },
+          "source": {
+            "name": "proxy",
+            "full_name": "upstream/proxy",
+            "owner": { "login": "upstream" }
+          }
+        }
+        """;
+        var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.Accepted, responseJson));
+
+        var repository = await client.ForkRepositoryAsync("token", "upstream", "proxy", CancellationToken.None);
+
+        Assert.Equal("octocat", repository.Owner);
+        Assert.Equal("proxy", repository.Name);
+        Assert.Equal("octocat/proxy", repository.FullName);
+    }
+
+    [Fact]
+    public async Task ForkRepositoryAsync_DoesNotTreatUnresolvedAlreadyForkedResponseAsSuccess()
+    {
+        const string responseJson = """
+        { "message": "Validation Failed", "errors": [{ "message": "Name already exists on this account" }] }
+        """;
+        var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.UnprocessableEntity, responseJson));
+
+        var exception = await Assert.ThrowsAsync<GitHubApiException>(
+            () => client.ForkRepositoryAsync("token", "upstream", "proxy", CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, exception.StatusCode);
+        Assert.Contains("already exists", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task GetCodespacesUsageAsync_GroupsComputeAndStorageUsage()
     {
         const string responseJson = """

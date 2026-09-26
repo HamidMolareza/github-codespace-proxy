@@ -134,6 +134,121 @@ public sealed class CodespaceProxyAutomationServiceTests
     }
 
     [Fact]
+    public async Task SelectAsync_ReusesConfiguredSourceRootOwnedBySelectedAccount()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = CreateAccount("Hamid", "HamidMolareza", DateTimeOffset.UtcNow);
+            db.GitHubAccounts.Add(account);
+            await db.SaveChangesAsync();
+
+            var github = new FakeGitHubApiClient { UseRepositoryMap = true };
+            github.UsageByToken["HamidMolareza-token"] = new GitHubUsageResponse(
+                GitHubAccountQuotaState.Healthy, "ok", 1, "hours", 0, "billing", []);
+            github.Repositories[("HamidMolareza-token", "wproxy97", "proxy2")] = new GitHubRepositoryRemote(
+                "wproxy97", "proxy2", "wproxy97/proxy2", "HamidMolareza", "proxy", "HamidMolareza/proxy");
+            github.Repositories[("HamidMolareza-token", "HamidMolareza", "proxy")] = new GitHubRepositoryRemote(
+                "HamidMolareza", "proxy", "HamidMolareza/proxy", null, null, null);
+
+            var result = await CreateService(db, github).SelectAsync(CancellationToken.None);
+
+            Assert.True(result.Succeeded);
+            Assert.NotNull(result.Selection);
+            Assert.Equal("HamidMolareza/proxy", result.Selection.RepositoryFullName);
+            var create = Assert.Single(github.CreateCalls);
+            Assert.Equal("HamidMolareza", create.Request.RepositoryOwner);
+            Assert.Equal("proxy", create.Request.RepositoryName);
+            Assert.Empty(github.ForkCalls);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SelectAsync_UsesActualForkIdentityWhenCreatingCodespace()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = CreateAccount("Low", "low", DateTimeOffset.UtcNow);
+            db.GitHubAccounts.Add(account);
+            await db.SaveChangesAsync();
+
+            var github = new FakeGitHubApiClient
+            {
+                UseRepositoryMap = true,
+                ForkResult = new GitHubRepositoryRemote("low", "proxy", "low/proxy", "wproxy97", "proxy", "wproxy97/proxy")
+            };
+            github.UsageByToken["low-token"] = new GitHubUsageResponse(GitHubAccountQuotaState.Healthy, "ok", 1, "hours", 0, "billing", []);
+            github.Repositories[("low-token", "wproxy97", "proxy2")] = new GitHubRepositoryRemote(
+                "wproxy97", "proxy2", "wproxy97/proxy2", "wproxy97", "proxy", "wproxy97/proxy");
+
+            var result = await CreateService(db, github).SelectAsync(CancellationToken.None);
+
+            Assert.True(result.Succeeded);
+            var fork = Assert.Single(github.ForkCalls);
+            Assert.Equal(("low-token", "wproxy97", "proxy2"), fork);
+            var create = Assert.Single(github.CreateCalls);
+            Assert.Equal("low", create.Request.RepositoryOwner);
+            Assert.Equal("proxy", create.Request.RepositoryName);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("someone", "proxy2")]
+    [InlineData("low", "workspace")]
+    public async Task SelectAsync_RejectsInvalidForkIdentity(string forkOwner, string forkName)
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = CreateDb(databasePath);
+            await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+            var account = CreateAccount("Low", "low", DateTimeOffset.UtcNow);
+            db.GitHubAccounts.Add(account);
+            await db.SaveChangesAsync();
+
+            var github = new FakeGitHubApiClient
+            {
+                UseRepositoryMap = true,
+                ForkResult = new GitHubRepositoryRemote(forkOwner, forkName, $"{forkOwner}/{forkName}", null, null, null)
+            };
+            github.Repositories[("low-token", "wproxy97", "proxy2")] = new GitHubRepositoryRemote(
+                "wproxy97", "proxy2", "wproxy97/proxy2", "wproxy97", "proxy", "wproxy97/proxy");
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => CreateService(db, github).SelectAsync(CancellationToken.None));
+
+            Assert.Contains("repository", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(github.CreateCalls);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task SelectAsync_PrefersActiveExistingOverStoppedExisting()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
@@ -413,15 +528,42 @@ public sealed class CodespaceProxyAutomationServiceTests
         public List<(string Token, string Name)> StopCalls { get; } = [];
         public List<(string Token, string Name)> DeleteCalls { get; } = [];
         public List<(string Token, CreateCodespaceRequest Request)> CreateCalls { get; } = [];
+        public Dictionary<(string Token, string Owner, string Name), GitHubRepositoryRemote> Repositories { get; } = [];
+        public List<(string Token, string Owner, string Name)> ForkCalls { get; } = [];
+        public bool UseRepositoryMap { get; init; }
+        public GitHubRepositoryRemote? ForkResult { get; init; }
 
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult(new GitHubUserProfile(token.Replace("-token", "", StringComparison.Ordinal), null, "Free"));
 
-        public Task<bool> RepositoryExistsAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
-            Task.FromResult(true);
+        public Task<GitHubRepositoryRemote?> GetRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken)
+        {
+            if (UseRepositoryMap)
+            {
+                return Task.FromResult<GitHubRepositoryRemote?>(Repositories.GetValueOrDefault((token, owner, repository)));
+            }
 
-        public Task ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+            return Task.FromResult<GitHubRepositoryRemote?>(
+                new GitHubRepositoryRemote(owner, repository, $"{owner}/{repository}", null, null, null));
+        }
+
+        public Task<GitHubRepositoryRemote> ForkRepositoryAsync(string token, string owner, string repository, CancellationToken cancellationToken)
+        {
+            ForkCalls.Add((token, owner, repository));
+            var result = ForkResult ?? new GitHubRepositoryRemote(
+                token.Replace("-token", "", StringComparison.Ordinal),
+                repository,
+                $"{token.Replace("-token", "", StringComparison.Ordinal)}/{repository}",
+                owner,
+                repository,
+                $"{owner}/{repository}");
+            if (UseRepositoryMap)
+            {
+                Repositories[(token, result.Owner, result.Name)] = result;
+            }
+
+            return Task.FromResult(result);
+        }
 
         public Task<IReadOnlyList<GitHubCodespaceRemote>> ListCodespacesAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult(CodespacesByToken.GetValueOrDefault(token) ?? []);
