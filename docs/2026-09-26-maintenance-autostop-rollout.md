@@ -42,8 +42,7 @@ passed.
 
 The image has no revision label. The separate `/opt/arvan-vps-gateway/src/gh-proxy`
 source tree differs from local HEAD; it is not authoritative for the running
-image. Preserve the matched base for this focused repair. Do not deploy the
-newer origin changes unintentionally.
+image. The deployment identity is the commit, DLL hash, and image digest above.
 
 ## Independent VPN blocker
 
