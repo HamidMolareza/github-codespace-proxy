@@ -13,6 +13,7 @@ public sealed class GitHubCodespaceMaintenanceService(
     ILogger<GitHubCodespaceMaintenanceService> logger) : BackgroundService
 {
     private readonly GitHubOptions _options = options.Value;
+    private readonly HashSet<Guid> _reportedActiveSessions = [];
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -42,6 +43,12 @@ public sealed class GitHubCodespaceMaintenanceService(
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var service = scope.ServiceProvider.GetRequiredService<GitHubCodespaceService>();
         var events = scope.ServiceProvider.GetRequiredService<IOperationalEventSink>();
+        var activeSessionIds = await db.LocalProxySessions
+            .AsNoTracking()
+            .Where(x => x.Status == LocalProxySessionStatus.Starting || x.Status == LocalProxySessionStatus.Running)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+        _reportedActiveSessions.IntersectWith(activeSessionIds);
         var accountIds = await db.GitHubAccounts
             .AsNoTracking()
             .Where(x => x.ValidationStatus != GitHubAccountValidationStatus.Invalid)
@@ -91,8 +98,39 @@ public sealed class GitHubCodespaceMaintenanceService(
                 }
             }
 
+            var activeProxySessions = await db.LocalProxySessions
+                .AsNoTracking()
+                .Where(x => x.AccountId == accountId)
+                .Where(x => x.Status == LocalProxySessionStatus.Starting || x.Status == LocalProxySessionStatus.Running)
+                .Where(x => x.CodespaceName != null && x.CodespaceName != "")
+                .Select(x => new { x.Id, x.CodespaceName })
+                .ToListAsync(cancellationToken);
+
             foreach (var snapshot in snapshots.Where(ShouldStop))
             {
+                var activeSession = activeProxySessions.FirstOrDefault(x =>
+                    string.Equals(x.CodespaceName, snapshot.Name, StringComparison.OrdinalIgnoreCase));
+                if (activeSession is not null)
+                {
+                    if (_reportedActiveSessions.Add(activeSession.Id))
+                    {
+                        await events.WriteAsync(new OperationalEventWrite(
+                            "github.maintenance.autostop.skipped.active_proxy",
+                            OperationalEventSeverity.Information,
+                            $"Skipped idle auto-stop for Codespace {snapshot.Name} because its local proxy session is active.",
+                            NodeId: accountId,
+                            SessionId: activeSession.Id,
+                            Details: new
+                            {
+                                snapshot.Name,
+                                snapshot.LastUsedAt,
+                                IdleMinutes = Math.Max(5, _options.AutoStopIdleMinutes)
+                            }), cancellationToken);
+                    }
+
+                    continue;
+                }
+
                 try
                 {
                     await service.StopAsync(accountId, snapshot.Name, cancellationToken);

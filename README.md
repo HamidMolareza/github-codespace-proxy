@@ -113,6 +113,8 @@ for explicit `proxy` rules. Direct traffic and company CIDRs should remain on
 the VPS company/direct route. If the Codespaces-backed proxy is down, matching
 proxy-rule requests should fail rather than silently use another egress path.
 
+GitHub maintenance does not auto-stop a Codespace with a matching `Starting` or `Running` local proxy session. Its idle shutdown uses real gateway traffic; unrelated Codespaces still use the GitHub idle threshold.
+
 After idle auto-stop, automatic wake is thresholded. By default, the app requires 5 proxy requests within 60 seconds before spending Codespaces minutes again. Manual Retry starts immediately.
 
 ## Observability

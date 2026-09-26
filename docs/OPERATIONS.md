@@ -158,6 +158,8 @@ docker compose down -v
 
 `LocalProxyIdleShutdownService` stops the active local Xray proxy and the backing Codespace when there is no user traffic through the public proxy gateway for the profile idle window. Internal API calls, dashboard polling, readiness probes, runtime diagnostics, GitHub sync/billing calls, and Xray access-log writes do not extend the idle window. The gateway remains bound, but after an idle auto-stop it holds automatic wake until repeated proxy traffic proves real demand.
 
+GitHub maintenance skips idle auto-stop when the same account and Codespace have a `Starting` or `Running` local proxy session. GitHub `LastUsedAt` does not represent SOCKS traffic through the SSH tunnel. Local idle shutdown remains based on gateway traffic and the existing profile timeout (20 minutes on the Arvan deployment). Unrelated Codespaces retain the configured GitHub idle policy. The `github.maintenance.autostop.skipped.active_proxy` event records the account, session, Codespace, GitHub last-use timestamp, and effective idle threshold once per active session per backend process; inactive session entries are discarded each maintenance pass. Reconnect behavior is unchanged.
+
 The default idle window is stored per profile and defaults to 30 minutes.
 
 By default, automatic wake requires 5 user proxy requests within 60 seconds after idle stop. Tune this with `LocalProxy__IdleWakeRequestThreshold` and `LocalProxy__IdleWakeWindowSeconds`; set the threshold to `1` to restore single-request wake behavior. Manual Retry in the Codespace Proxy tab bypasses the threshold.

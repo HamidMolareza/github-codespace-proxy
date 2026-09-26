@@ -240,6 +240,118 @@ public sealed class CodespaceStorageCleanupServiceTests
         }
     }
 
+    [Theory]
+    [InlineData(LocalProxySessionStatus.Starting)]
+    [InlineData(LocalProxySessionStatus.Running)]
+    public async Task MaintenanceRunOnceAsync_ProtectsActiveSessionAndLogsOnce(LocalProxySessionStatus status)
+    {
+        await VerifyMaintenanceAutoStopAsync(status, true, true, protects: true);
+    }
+
+    [Theory]
+    [InlineData(null, true, true)]
+    [InlineData(LocalProxySessionStatus.Stopped, true, true)]
+    [InlineData(LocalProxySessionStatus.Error, true, true)]
+    [InlineData(LocalProxySessionStatus.Stopping, true, true)]
+    [InlineData(LocalProxySessionStatus.Running, false, true)]
+    [InlineData(LocalProxySessionStatus.Running, true, false)]
+    public async Task MaintenanceRunOnceAsync_StopsWithoutMatchingActiveSession(
+        LocalProxySessionStatus? status, bool sameAccount, bool sameCodespace)
+    {
+        await VerifyMaintenanceAutoStopAsync(status, sameAccount, sameCodespace, protects: false);
+    }
+
+    private static async Task VerifyMaintenanceAutoStopAsync(
+        LocalProxySessionStatus? status, bool sameAccount, bool sameCodespace, bool protects)
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"gh-proxy-tests-{Guid.NewGuid():N}.db");
+        try
+        {
+            var clock = new TestClock();
+            var now = clock.UtcNow;
+            var github = new FakeGitHubApiClient
+            {
+                Codespaces = [new GitHubCodespaceRemote(
+                    "idle-proxy", "Available", "octocat/proxy2", "2-core", "UsEast", null, "octocat",
+                    now.AddHours(-3), now.AddHours(-2), now.AddMinutes(-21))]
+            };
+            var events = new RecordingOperationalEventSink();
+            var services = new ServiceCollection();
+            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
+            services.AddSingleton<IGitHubApiClient>(github);
+            services.AddSingleton<IClock>(clock);
+            services.AddSingleton<ISecretProtector, PassThroughSecretProtector>();
+            services.AddSingleton<IOperationalEventSink>(events);
+            services.AddScoped<AuditService>();
+            services.AddScoped<GitHubCodespaceService>();
+            services.AddScoped<CodespaceStorageCleanupService>();
+            services.Configure<GitHubOptions>(options => options.AutoDeleteStorageLimitedProxyCodespaces = false);
+            await using var provider = services.BuildServiceProvider();
+            Guid accountId;
+            Guid? sessionId = null;
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                await new DatabaseSchemaInitializer(db).InitializeAsync(CancellationToken.None);
+                accountId = (await AddAccountAsync(db, now)).Id;
+                if (status is not null)
+                {
+                    var profile = new LocalProxyProfile { Name = "Default", CreatedAt = now, UpdatedAt = now };
+                    var session = new LocalProxySession
+                    {
+                        Profile = profile,
+                        AccountId = sameAccount ? accountId : Guid.NewGuid(),
+                        CodespaceName = sameCodespace ? "IDLE-PROXY" : "another-codespace",
+                        Status = status.Value,
+                        StartedAt = now.AddHours(-1),
+                        LastActivityAt = now
+                    };
+                    sessionId = session.Id;
+                    db.LocalProxySessions.Add(session);
+                    await db.SaveChangesAsync();
+                }
+            }
+
+            using var maintenance = new GitHubCodespaceMaintenanceService(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                Options.Create(new GitHubOptions { AutoStopIdleMinutes = 20 }),
+                clock, NullLogger<GitHubCodespaceMaintenanceService>.Instance);
+            await maintenance.RunOnceAsync(CancellationToken.None);
+            if (protects)
+            {
+                await maintenance.RunOnceAsync(CancellationToken.None);
+                Assert.Empty(github.StopCalls);
+                var skipped = Assert.Single(events.Entries, x => x.EventType == "github.maintenance.autostop.skipped.active_proxy");
+                Assert.Equal(accountId, skipped.NodeId);
+                Assert.Equal(sessionId, skipped.SessionId);
+                Assert.DoesNotContain(events.Entries, x => x.EventType == "github.maintenance.autostop");
+                await using var scope = provider.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var session = await db.LocalProxySessions.SingleAsync();
+                session.Status = LocalProxySessionStatus.Stopped;
+                await db.SaveChangesAsync();
+                await maintenance.RunOnceAsync(CancellationToken.None);
+
+                session.Status = LocalProxySessionStatus.Running;
+                await db.SaveChangesAsync();
+                await maintenance.RunOnceAsync(CancellationToken.None);
+                Assert.Equal(2, events.Entries.Count(x => x.EventType == "github.maintenance.autostop.skipped.active_proxy"));
+            }
+            else
+            {
+                Assert.DoesNotContain(events.Entries, x => x.EventType == "github.maintenance.autostop.skipped.active_proxy");
+            }
+
+            Assert.Equal(("token", "idle-proxy"), Assert.Single(github.StopCalls));
+            Assert.Single(events.Entries, x => x.EventType == "github.maintenance.autostop");
+            Assert.DoesNotContain(events.Entries, x => x.EventType.EndsWith(".failed", StringComparison.Ordinal));
+        }
+        finally
+        {
+            File.Delete(databasePath);
+        }
+    }
+
     private static CodespaceStorageCleanupService CreateService(AppDbContext db, IGitHubApiClient github, bool autoDelete = true)
     {
         var clock = new TestClock();
@@ -304,6 +416,7 @@ public sealed class CodespaceStorageCleanupServiceTests
     {
         public IReadOnlyList<GitHubCodespaceRemote> Codespaces { get; init; } = [];
         public List<(string Token, string Name)> DeleteCalls { get; } = [];
+        public List<(string Token, string Name)> StopCalls { get; } = [];
 
         public Task<GitHubUserProfile> GetAuthenticatedUserAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult(new GitHubUserProfile("octocat", "Octo Cat", "Free"));
@@ -323,8 +436,11 @@ public sealed class CodespaceStorageCleanupServiceTests
         public Task<GitHubCodespaceRemote> StartCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<GitHubCodespaceRemote> StopCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+        public Task<GitHubCodespaceRemote> StopCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken)
+        {
+            StopCalls.Add((token, codespaceName));
+            return Task.FromResult(Codespaces.Single(x => x.Name == codespaceName) with { State = "Shutdown" });
+        }
 
         public Task DeleteCodespaceAsync(string token, string codespaceName, CancellationToken cancellationToken)
         {
@@ -352,6 +468,17 @@ public sealed class CodespaceStorageCleanupServiceTests
     private sealed class TestClock : IClock
     {
         public DateTimeOffset UtcNow { get; } = DateTimeOffset.UtcNow;
+    }
+
+    private sealed class RecordingOperationalEventSink : IOperationalEventSink
+    {
+        public List<OperationalEventWrite> Entries { get; } = [];
+
+        public Task WriteAsync(OperationalEventWrite entry, CancellationToken cancellationToken = default)
+        {
+            Entries.Add(entry);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class NoopOperationalEventSink : IOperationalEventSink
